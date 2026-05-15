@@ -4,7 +4,7 @@ defmodule EndPointBlank.Http do
   require Logger
 
   @max_attempts 3
-  @retry_delay_ms 500
+  @retry_delay_ms 200
 
   @doc """
   POSTs `body` as JSON to `url` with the given `auth_header`.
