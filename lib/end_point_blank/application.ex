@@ -5,6 +5,7 @@ defmodule EndPointBlank.Application do
   def start(_type, _args) do
     children = [
       EndPointBlank.Config,
+      EndPointBlank.AuthCache,
       EndPointBlank.AccessTokens,
       EndPointBlank.Writers.DelayedWriter
     ]
