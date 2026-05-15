@@ -9,6 +9,7 @@ defmodule EndPointBlank.AccessTokens do
   use GenServer
 
   @refresh_buffer_seconds 120
+  @min_ttl_seconds 30
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -49,7 +50,7 @@ defmodule EndPointBlank.AccessTokens do
   def handle_call({:exists, hostname}, _from, state) do
     exists =
       case Map.get(state, hostname) do
-        {_token, expires_at} -> not_near_expiry?(expires_at)
+        {_token, expires_at} -> usable?(expires_at)
         nil -> false
       end
 
@@ -92,5 +93,10 @@ defmodule EndPointBlank.AccessTokens do
   defp not_near_expiry?(expires_at) do
     buffer = DateTime.add(DateTime.utc_now(), @refresh_buffer_seconds, :second)
     DateTime.compare(expires_at, buffer) == :gt
+  end
+
+  defp usable?(expires_at) do
+    min_ttl = DateTime.add(DateTime.utc_now(), @min_ttl_seconds, :second)
+    DateTime.compare(expires_at, min_ttl) == :gt
   end
 end
