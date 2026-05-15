@@ -6,7 +6,7 @@ defmodule EndPointBlank.Commands.EndpointUpdate do
   """
 
   require Logger
-  alias EndPointBlank.{Config, Authorization}
+  alias EndPointBlank.{Config, Authorization, Http}
 
   @doc "Sends the endpoint list to the EndPointBlank API."
   def update(endpoints) when is_list(endpoints) do
@@ -22,7 +22,7 @@ defmodule EndPointBlank.Commands.EndpointUpdate do
       app_version: config.application_version
     }
 
-    case Req.post(Config.endpoint_update_url(), json: body, headers: [{"authorization", auth}]) do
+    case Http.post(Config.endpoint_update_url(), body, auth) do
       {:ok, %Req.Response{status: s}} when s in 200..299 ->
         Logger.info("[EndPointBlank] Endpoints registered: #{s}")
         :ok

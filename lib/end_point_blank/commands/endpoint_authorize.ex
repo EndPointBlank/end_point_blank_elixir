@@ -6,7 +6,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
   """
 
   require Logger
-  alias EndPointBlank.{Config, Authorization, RequestStore, VersionFinder}
+  alias EndPointBlank.{Config, Authorization, Http, RequestStore, VersionFinder}
 
   @doc """
   Authorizes `conn` against the EndPointBlank service.
@@ -34,7 +34,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
       uuid: RequestStore.get_uuid()
     }
 
-    case Req.post(Config.authorize_url(), json: body, headers: [{"authorization", auth}]) do
+    case Http.post(Config.authorize_url(), body, auth) do
       {:ok, %Req.Response{status: 201, body: resp_body}} ->
         source_env_id =
           case resp_body do

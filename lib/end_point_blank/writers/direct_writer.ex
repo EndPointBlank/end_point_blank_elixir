@@ -2,7 +2,7 @@ defmodule EndPointBlank.Writers.DirectWriter do
   @moduledoc "Synchronously POSTs a payload batch to the EndPointBlank API."
 
   require Logger
-  alias EndPointBlank.Authorization
+  alias EndPointBlank.{Authorization, Http}
 
   @url_builders %{
     requests: :requests_url,
@@ -16,7 +16,7 @@ defmodule EndPointBlank.Writers.DirectWriter do
     auth = Authorization.header()
     body = %{payload: payloads}
 
-    case Req.post(url, json: body, headers: [{"authorization", auth}]) do
+    case Http.post(url, body, auth) do
       {:ok, %Req.Response{status: s}} when s in 200..299 ->
         :ok
 
