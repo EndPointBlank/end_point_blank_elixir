@@ -6,7 +6,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
   """
 
   require Logger
-  alias EndPointBlank.{AuthCache, Config, Authorization, Http, RequestStore, VersionFinder}
+  alias EndPointBlank.{AccessTokens, AuthCache, Config, Authorization, Http, RequestStore, VersionFinder}
 
   @doc """
   Authorizes `conn` against the EndPointBlank service.
@@ -47,7 +47,25 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
           uuid: RequestStore.get_uuid()
         }
 
-        case Http.post(Config.authorize_url(), body, auth) do
+        result = Http.post(Config.authorize_url(), body, auth)
+
+        result =
+          case result do
+            {:ok, %Req.Response{status: 401}} ->
+              if String.starts_with?(auth, "Bearer ") do
+                AccessTokens.remove(target_hostname)
+                retry_auth = case AccessTokens.token(target_hostname) do
+                  nil -> Authorization.basic_header()
+                  fresh -> "Bearer #{fresh}"
+                end
+                Http.post(Config.authorize_url(), body, retry_auth)
+              else
+                result
+              end
+            _ -> result
+          end
+
+        case result do
           {:ok, %Req.Response{status: 201, body: resp_body}} ->
             source_env_id =
               case resp_body do
