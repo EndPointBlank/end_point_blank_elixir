@@ -79,7 +79,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
 
           {:ok, %Req.Response{status: s, body: b}} ->
             Logger.error("[EndPointBlank] Authorization failed: status=#{s} body=#{inspect(b)}")
-            {:error, :unauthorized}
+            {:error, s, b}
 
           {:error, reason} ->
             Logger.error("[EndPointBlank] Authorization error: #{inspect(reason)}")

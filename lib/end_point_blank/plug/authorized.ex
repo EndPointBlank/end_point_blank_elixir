@@ -39,10 +39,17 @@ defmodule EndPointBlank.Plug.Authorized do
       {:ok, conn} ->
         conn
 
+      {:error, status, body} when is_integer(status) ->
+        encoded = if is_binary(body), do: body, else: Jason.encode!(body)
+        conn
+        |> put_resp_content_type("application/json")
+        |> send_resp(status, encoded)
+        |> halt()
+
       {:error, _reason} ->
         conn
         |> put_resp_content_type("application/json")
-        |> send_resp(401, Jason.encode!(%{error: "Unauthorized"}))
+        |> send_resp(503, Jason.encode!(%{error: "Authorization service unavailable"}))
         |> halt()
     end
   end
