@@ -22,6 +22,12 @@ defmodule EndPointBlank.Commands.EndpointUpdate do
       app_version: config.application_version
     }
 
+    Logger.info(
+      "[EndPointBlank] Sending application update: " <>
+        "application=#{body.application} environment=#{body.environment} " <>
+        "app_version=#{body.app_version}"
+    )
+
     case Http.post(Config.endpoint_update_url(), body, auth) do
       {:ok, %Req.Response{status: s}} when s in 200..299 ->
         Logger.info("[EndPointBlank] Endpoints registered: #{s}")
