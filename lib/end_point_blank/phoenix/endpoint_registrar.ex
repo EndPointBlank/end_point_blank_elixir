@@ -29,43 +29,36 @@ defmodule EndPointBlank.Phoenix.EndpointRegistrar do
 
   defp build_endpoints(router) do
     router.__routes__()
-    |> Enum.flat_map(fn route ->
+    |> Enum.map(fn route ->
       controller = route.plug
       action = route.plug_opts
       path = route.path
       verb = route.verb |> Atom.to_string() |> String.upcase()
 
-      versions = controller_versions(controller, action)
-
-      Enum.map(versions, fn {version, state} ->
-        %{
-          path: path,
-          http_method: verb,
-          version: version,
-          state: state
-        }
-      end)
+      %{
+        path: path,
+        http_method: verb,
+        endpoint_versions: controller_versions(controller, action)
+      }
     end)
     |> Enum.uniq()
   end
 
-  # Returns a list of {version, state} tuples for the given controller+action.
-  # Falls back to [{nil, "Current"}] when the controller has no version metadata.
+  # Returns a map of `state_name => [versions]` for the given controller+action,
+  # matching the shape the other client libraries send. Empty map when the
+  # controller has no version metadata.
   defp controller_versions(controller, action) do
     if function_exported?(controller, :__epb_versions__, 0) do
       versions_map = controller.__epb_versions__()
 
       case Map.get(versions_map, action) do
-        %{versions: versions, state: state} ->
-          Enum.map(versions, fn v -> {v, state} end)
-
-        nil ->
-          [{nil, "Current"}]
+        %{versions: versions, state: state} -> %{state => versions}
+        _ -> %{}
       end
     else
-      [{nil, "Current"}]
+      %{}
     end
   rescue
-    _ -> [{nil, "Current"}]
+    _ -> %{}
   end
 end
