@@ -41,6 +41,7 @@ defmodule EndPointBlank.Phoenix.EndpointRegistrar do
         endpoint_versions: controller_versions(controller, action)
       }
     end)
+    |> Enum.reject(fn ep -> ep.endpoint_versions == %{} end)
     |> Enum.uniq()
   end
 
