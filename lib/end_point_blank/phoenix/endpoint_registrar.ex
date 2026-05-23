@@ -57,7 +57,7 @@ defmodule EndPointBlank.Phoenix.EndpointRegistrar do
       versions_map = controller.__epb_versions__()
 
       case Map.get(versions_map, action) do
-        %{versions: versions, state: state} -> %{state => versions}
+        states_map when is_map(states_map) and map_size(states_map) > 0 -> states_map
         _ -> %{}
       end
     else

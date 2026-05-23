@@ -8,10 +8,15 @@ defmodule EndPointBlank.Phoenix.Versioned do
         use Phoenix.Controller
         use EndPointBlank.Phoenix.Versioned
 
-        version_of :index, ["1"], state: "Current"
+        version_of :index, ["v1", "v2"], state: "Current"
+        version_of :index, ["v0"],       state: "Deprecated"
 
         def index(conn, _params), do: ...
       end
+
+  Multiple calls for the same action are merged — repeating a state appends
+  (de-duped) versions, and additional states are added alongside the existing
+  ones.
 
   The registered metadata is read by `EndPointBlank.Phoenix.EndpointRegistrar`
   when it builds the endpoint list sent to the EndPointBlank API at startup.
@@ -27,7 +32,9 @@ defmodule EndPointBlank.Phoenix.Versioned do
   end
 
   @doc """
-  Declares version metadata for `action`.
+  Declares version metadata for `action`. Stores it as a nested
+  `%{action => %{state => versions}}` map, merging with any prior declaration
+  for the same action.
 
   ## Options
     * `:state` - e.g. `"Current"`, `"Deprecated"`, `"In Development"` (default: `"Current"`)
@@ -36,12 +43,30 @@ defmodule EndPointBlank.Phoenix.Versioned do
     state = Keyword.get(opts, :state, "Current")
 
     quote do
-      @epb_action_versions Map.put(
+      @epb_action_versions EndPointBlank.Phoenix.Versioned.__merge__(
                              @epb_action_versions,
                              unquote(action),
-                             %{versions: unquote(versions), state: unquote(state)}
+                             unquote(state),
+                             unquote(versions)
                            )
     end
+  end
+
+  @doc false
+  def __merge__(action_versions, action, state, versions) when is_list(versions) do
+    Map.update(
+      action_versions,
+      action,
+      %{state => versions},
+      fn existing_states ->
+        Map.update(
+          existing_states,
+          state,
+          versions,
+          fn prior -> Enum.uniq(prior ++ versions) end
+        )
+      end
+    )
   end
 
   defmacro __before_compile__(_env) do
