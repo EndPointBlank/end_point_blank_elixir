@@ -48,6 +48,11 @@ defmodule EndPointBlank.Phoenix.EndpointRegistrar do
   # matching the shape the other client libraries send. Empty map when the
   # controller has no version metadata.
   defp controller_versions(controller, action) do
+    # Force the controller to load before introspection — function_exported?/3
+    # returns false for unloaded modules, which would otherwise drop every
+    # version metadata when this is invoked during application start.
+    Code.ensure_loaded(controller)
+
     if function_exported?(controller, :__epb_versions__, 0) do
       versions_map = controller.__epb_versions__()
 
