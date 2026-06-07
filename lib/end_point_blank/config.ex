@@ -19,11 +19,13 @@ defmodule EndPointBlank.Config do
     :application_version,
     :version_finder,
     :token_ttl,
+    :mask_hook,
     base_url: @default_base_url,
     log_base_url: @default_log_base_url,
     log_mode: :direct,
     worker_count: 4,
-    cache_ttl: 300
+    cache_ttl: 300,
+    masking_rules: []
   ]
 
   def start_link(_opts) do
@@ -39,6 +41,11 @@ defmodule EndPointBlank.Config do
       end)
     end)
   end
+
+  # Config readers
+
+  def masking_rules, do: get().masking_rules
+  def mask_hook, do: get().mask_hook
 
   # URL builders
 
