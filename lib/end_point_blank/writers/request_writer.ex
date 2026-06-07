@@ -1,7 +1,7 @@
 defmodule EndPointBlank.Writers.RequestWriter do
   @moduledoc "Sends inbound request metadata to the EndPointBlank API."
 
-  alias EndPointBlank.{Config, RequestStore, VersionFinder, Writers}
+  alias EndPointBlank.{Config, Masking, RequestStore, VersionFinder, Writers}
 
   def write(%Plug.Conn{} = conn) do
     config = Config.get()
@@ -18,6 +18,8 @@ defmodule EndPointBlank.Writers.RequestWriter do
       request: read_body(conn),
       sent_at: utc_now()
     }
+
+    payload = Masking.apply(payload, :request, Config.masking_rules(), Config.mask_hook())
 
     Writers.write(:requests, config.log_mode, [payload])
   end

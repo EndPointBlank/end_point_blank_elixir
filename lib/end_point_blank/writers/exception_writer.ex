@@ -1,7 +1,7 @@
 defmodule EndPointBlank.Writers.ExceptionWriter do
   @moduledoc "Sends unhandled exception details to the EndPointBlank API."
 
-  alias EndPointBlank.{Config, RequestStore, Writers}
+  alias EndPointBlank.{Config, Masking, RequestStore, Writers}
 
   @doc "Sends `exception` with its `stacktrace` to the errors endpoint."
   def write(exception, stacktrace \\ []) do
@@ -15,6 +15,16 @@ defmodule EndPointBlank.Writers.ExceptionWriter do
       sent_at: DateTime.utc_now() |> DateTime.to_iso8601(),
       source_application_environment_id: RequestStore.get_source_env_id()
     }
+
+    payload = Masking.apply(payload, :error, Config.masking_rules(), Config.mask_hook())
+
+    payload =
+      case RequestStore.get_conn() do
+        %Plug.Conn{} = conn ->
+          Map.merge(payload, %{stamped_path: conn.request_path, stamped_http_method: conn.method})
+        _ ->
+          payload
+      end
 
     Writers.write(:errors, config.log_mode, [payload])
   end

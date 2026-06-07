@@ -1,7 +1,7 @@
 defmodule EndPointBlank.Writers.ResponseWriter do
   @moduledoc "Sends response metadata to the EndPointBlank API."
 
-  alias EndPointBlank.{Config, RequestStore, Writers}
+  alias EndPointBlank.{Config, Masking, RequestStore, Writers}
 
   def write(%Plug.Conn{} = conn) do
     config = Config.get()
@@ -18,6 +18,8 @@ defmodule EndPointBlank.Writers.ResponseWriter do
       data: %{},
       source_application_environment_id: RequestStore.get_source_env_id()
     }
+
+    payload = Masking.apply(payload, :response, Config.masking_rules(), Config.mask_hook())
 
     Writers.write(:responses, config.log_mode, [payload])
   end
