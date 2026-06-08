@@ -168,7 +168,7 @@ defmodule EndPointBlank.MaskingTest do
         Masking.apply(
           payload,
           :request,
-          [rule("request_body", path: "not a path", replacement_value: "_")],
+          [rule("request_body", path: "not a path", regex: "b", replacement_value: "_")],
           nil
         )
 
