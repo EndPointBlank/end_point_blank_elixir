@@ -148,17 +148,17 @@ defmodule EndPointBlank.MaskingTest do
     end
 
     test "bad regex degrades to no-op" do
-      payload = %{path: "/users/x"}
+      payload = %{request: ~s({"a":"b"})}
 
       out =
         Masking.apply(
           payload,
           :request,
-          [rule("path", regex: "([unterminated", replacement_value: "_")],
+          [rule("request_body", path: "$.a", regex: "([unterminated", replacement_value: "_")],
           nil
         )
 
-      assert out.path == "/users/x"
+      assert Jason.decode!(out.request) == %{"a" => "b"}
     end
 
     test "malformed path degrades to no-op" do
