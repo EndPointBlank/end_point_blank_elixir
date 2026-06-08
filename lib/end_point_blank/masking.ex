@@ -7,8 +7,8 @@ defmodule EndPointBlank.Masking do
 
   Each rule is a map (atom-keyed) with:
 
-    * `:target` — one of `request_body`, `request_headers`, `path`,
-      `response_body`, `error_message`; mapped to a wire key per `@field_map`.
+    * `:target` — one of `"request_body"`, `"request_headers"`, `"path"`,
+      `"response_body"`, `"error_message"`; mapped to a wire key per `@field_map`.
     * `:path` — a JSONPath string (or nil/""): selects node(s) to mask.
     * `:regex` — a regex string (or nil/""): substitutes within string leaves.
     * `:replacement_value` — literal replacement string (blank ⇒ "...").
@@ -19,7 +19,8 @@ defmodule EndPointBlank.Masking do
     * regex only   — global regex substitution on every string leaf.
     * path + regex — within each selected node, regex-substitute string leaves.
 
-  Bad regex / unparseable path / non-JSON body degrade to a no-op; never raise.
+  Bad regex or unparseable path make the rule a no-op. For non-JSON body values,
+  `:path` no-ops and `:regex` (if valid) applies to the raw string; never raise.
   """
 
   alias EndPointBlank.Masking.JsonPath
