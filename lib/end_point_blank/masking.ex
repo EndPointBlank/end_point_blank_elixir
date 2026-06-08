@@ -149,7 +149,8 @@ defmodule EndPointBlank.Masking do
         [{start, len} | _] = match
         prefix = binary_part(string, cursor, start - cursor)
         groups = Enum.map(match, fn {s, l} -> substring(string, s, l) end)
-        {[expand(template, groups), prefix | acc], start + len}
+        next_cursor = min(start + max(len, 1), byte_size(string))
+        {[expand(template, groups), prefix | acc], next_cursor}
       end)
 
     rest = binary_part(string, cursor, byte_size(string) - cursor)
