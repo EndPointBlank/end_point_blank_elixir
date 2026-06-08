@@ -88,7 +88,7 @@ defmodule EndPointBlank.Masking do
   defp apply_to_raw_string(value, rule) do
     case compile_regex(rule) do
       nil -> value
-      re -> Regex.replace(re, value, replacement(rule))
+      re -> regex_replace_all(re, value, replacement(rule))
     end
   end
 
@@ -122,7 +122,7 @@ defmodule EndPointBlank.Masking do
 
   # Recurse over containers; substitute on every string leaf.
   defp regex_replace_leaves(node, re, repl) when is_binary(node) do
-    Regex.replace(re, node, repl)
+    regex_replace_all(re, node, repl)
   end
 
   defp regex_replace_leaves(node, re, repl) when is_map(node) do
@@ -134,6 +134,74 @@ defmodule EndPointBlank.Masking do
   end
 
   defp regex_replace_leaves(node, _re, _repl), do: node
+
+  # Global regex substitution where `template` is a backreference template:
+  # `$N` inserts capture group N (`$0` = whole match), `$$` = literal `$`. See
+  # the shared "Replacement Backreferences" contract. Uses `:index` scan so the
+  # match list is finite (no infinite loop), and never raises.
+  @doc false
+  def regex_replace_all(re, string, template) when is_binary(string) do
+    matches = Regex.scan(re, string, return: :index)
+
+    {out, cursor} =
+      Enum.reduce(matches, {[], 0}, fn match, {acc, cursor} ->
+        [{start, len} | _] = match
+        prefix = binary_part(string, cursor, start - cursor)
+        groups = Enum.map(match, fn {s, l} -> substring(string, s, l) end)
+        {[expand(template, groups), prefix | acc], start + len}
+      end)
+
+    rest = binary_part(string, cursor, byte_size(string) - cursor)
+    IO.iodata_to_binary(Enum.reverse([rest | out]))
+  end
+
+  # Non-participating group = {-1, 0} → "".
+  defp substring(_string, start, _len) when start < 0, do: ""
+  defp substring(string, start, len), do: binary_part(string, start, len)
+
+  # Expand `$`-tokens in `template` against `groups` (0-indexed: groups[0] is the
+  # whole match). Implemented explicitly per spec — does NOT use Elixir's native
+  # `\N` replacement syntax.
+  @doc false
+  def expand(template, groups) do
+    do_expand(template, groups, [])
+  end
+
+  defp do_expand(<<>>, _groups, acc), do: IO.iodata_to_binary(Enum.reverse(acc))
+
+  defp do_expand(<<"$$", rest::binary>>, groups, acc) do
+    do_expand(rest, groups, ["$" | acc])
+  end
+
+  defp do_expand(<<"$", rest::binary>>, groups, acc) do
+    case take_digits(rest, []) do
+      {nil, _rest} ->
+        # `$` followed by a non-digit (and not `$`), or trailing `$`: literal `$`.
+        do_expand(rest, groups, ["$" | acc])
+
+      {n, after_digits} ->
+        do_expand(after_digits, groups, [group_at(groups, n) | acc])
+    end
+  end
+
+  defp do_expand(<<c::utf8, rest::binary>>, groups, acc) do
+    do_expand(rest, groups, [<<c::utf8>> | acc])
+  end
+
+  # Read the full consecutive digit run as an integer. Returns {nil, rest} when
+  # there is no leading digit.
+  defp take_digits(<<d, rest::binary>>, acc) when d in ?0..?9 do
+    take_digits(rest, [d | acc])
+  end
+
+  defp take_digits(rest, []), do: {nil, rest}
+
+  defp take_digits(rest, acc) do
+    n = acc |> Enum.reverse() |> IO.iodata_to_binary() |> String.to_integer()
+    {n, rest}
+  end
+
+  defp group_at(groups, n), do: Enum.at(groups, n, "")
 
   # nil/blank path ⇒ nil (no path step). Parseable path ⇒ tokens. Bad ⇒ :error (no-op).
   defp parse_path(rule) do
