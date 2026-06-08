@@ -96,25 +96,33 @@ defmodule EndPointBlank.Masking do
   # Applies the rule to a structured value (decoded JSON or header map).
   defp apply_to_value(value, rule) do
     tokens = parse_path(rule)
+    regex_str = Map.get(rule, :regex)
     re = compile_regex(rule)
     repl = replacement(rule)
 
-    cond do
-      # path + regex: select nodes, apply regex to leaves within each.
-      usable_path?(tokens) and not is_nil(re) ->
-        JsonPath.transform(value, tokens, &regex_replace_leaves(&1, re, repl))
+    path_invalid? = tokens == :error
+    regex_invalid? = is_binary(regex_str) and regex_str != "" and is_nil(re)
 
-      # path only: replace each selected node entirely.
-      usable_path?(tokens) ->
-        JsonPath.transform(value, tokens, fn _old -> repl end)
+    if path_invalid? or regex_invalid? do
+      value
+    else
+      cond do
+        # path + regex: select nodes, apply regex to leaves within each.
+        usable_path?(tokens) and not is_nil(re) ->
+          JsonPath.transform(value, tokens, &regex_replace_leaves(&1, re, repl))
 
-      # regex only: substitute across every string leaf.
-      not is_nil(re) ->
-        regex_replace_leaves(value, re, repl)
+        # path only: replace each selected node entirely.
+        usable_path?(tokens) ->
+          JsonPath.transform(value, tokens, fn _old -> repl end)
 
-      # no usable path or regex: no-op.
-      true ->
-        value
+        # regex only: substitute across every string leaf.
+        not is_nil(re) ->
+          regex_replace_leaves(value, re, repl)
+
+        # no usable path or regex: no-op.
+        true ->
+          value
+      end
     end
   end
 
