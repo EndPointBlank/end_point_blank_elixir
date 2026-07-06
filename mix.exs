@@ -23,8 +23,10 @@ defmodule EndPointBlankElixir.MixProject do
   # `{:end_point_blank_elixir, "~> 0.2", organization: "<org>"}`.
   defp package do
     [
-      # Proprietary — published only to the private Hex org, so no public
-      # SPDX license is declared.
+      # Proprietary. `LicenseRef-Proprietary` is the SPDX custom-license-ref
+      # syntax; Hex warns it isn't a listed identifier, but a `licenses` entry
+      # is required for the build, and this is only ever published privately.
+      licenses: ["LicenseRef-Proprietary"],
       files: ~w(lib mix.exs README.md),
       links: %{"Source" => "https://github.com/EndPointBlank/end_point_blank_elixir"}
     ]
