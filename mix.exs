@@ -43,7 +43,9 @@ defmodule EndPointBlankElixir.MixProject do
     [
       {:req, "~> 0.5"},
       {:plug, "~> 1.14"},
-      {:jason, "~> 1.2"}
+      {:jason, "~> 1.2"},
+      # Dev-only: lets `mix hex.publish` build + publish docs (and `mix docs`).
+      {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end
 end
