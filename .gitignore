@@ -5,3 +5,4 @@
 /.lexical/
 *.ez
 erl_crash.dump
+*.tar
