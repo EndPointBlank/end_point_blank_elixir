@@ -3,7 +3,10 @@ defmodule EndPointBlank.Writers.DelayedWriter do
   Background queue that batches payloads and flushes them every 100 ms.
 
   Payloads for each URL key are accumulated in the GenServer state and sent
-  in batches of up to #{4} via `DirectWriter` on each flush tick.
+  in batches of up to #{4} via `DirectWriter` on each flush tick. Batches
+  (across all URL keys) are flushed concurrently, bounded by
+  `EndPointBlank.Config.worker_count/0` (default 4), so a flush tick never
+  fires more than that many writes in flight at once.
 
   Each URL key's queue is capped at #{1_000} payloads. If an intake outage
   (or any slow/hung downstream) causes payloads to accumulate faster than
@@ -55,11 +58,20 @@ defmodule EndPointBlank.Writers.DelayedWriter do
 
   @impl true
   def handle_info(:flush, state) do
-    Enum.each(state, fn {url_key, payloads} ->
+    state
+    |> Enum.flat_map(fn {url_key, payloads} ->
       payloads
       |> Enum.chunk_every(@batch_size)
-      |> Enum.each(&EndPointBlank.Writers.DirectWriter.write(url_key, &1))
+      |> Enum.map(&{url_key, &1})
     end)
+    |> Task.async_stream(
+      fn {url_key, batch} -> EndPointBlank.Writers.DirectWriter.write(url_key, batch) end,
+      max_concurrency: EndPointBlank.Config.worker_count(),
+      # Http already bounds each attempt (and its retries); let it own the
+      # timeout instead of racing it here.
+      timeout: :infinity
+    )
+    |> Stream.run()
 
     schedule_flush()
     {:noreply, %{}}

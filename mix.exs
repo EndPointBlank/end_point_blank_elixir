@@ -27,7 +27,7 @@ defmodule EndPointBlankElixir.MixProject do
       # syntax; Hex warns it isn't a listed identifier, but a `licenses` entry
       # is required for the build, and this is only ever published privately.
       licenses: ["LicenseRef-Proprietary"],
-      files: ~w(lib mix.exs README.md),
+      files: ~w(lib mix.exs README.md LICENSE),
       links: %{"Source" => "https://github.com/EndPointBlank/end_point_blank_elixir"}
     ]
   end
