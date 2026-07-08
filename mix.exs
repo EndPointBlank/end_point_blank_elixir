@@ -1,7 +1,7 @@
 defmodule EndPointBlankElixir.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.3.1"
 
   def project do
     [
@@ -20,7 +20,7 @@ defmodule EndPointBlankElixir.MixProject do
 
   # Published to a PRIVATE Hex organization (set the org at publish time:
   # `mix hex.publish --organization <org>`). Consumers depend on it with
-  # `{:end_point_blank_elixir, "~> 0.2", organization: "<org>"}`.
+  # `{:end_point_blank_elixir, "~> 0.3", organization: "<org>"}`.
   defp package do
     [
       # Proprietary. `LicenseRef-Proprietary` is the SPDX custom-license-ref
