@@ -1,0 +1,30 @@
+name: Publish
+
+# Publishes the package to Hex when a GitHub Release is published.
+# Requires repo secret HEX_API_KEY (from `mix hex.user key generate`).
+# Skips gracefully (no failure) until that secret is configured.
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26'
+          elixir-version: '1.16'
+      - run: mix deps.get
+      - name: Publish to Hex
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: |
+          if [ -z "$HEX_API_KEY" ]; then
+            echo "::warning::HEX_API_KEY not configured — skipping publish. Add it in repo Settings → Secrets to enable."
+            exit 0
+          fi
+          mix hex.publish --yes
