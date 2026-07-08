@@ -76,6 +76,17 @@ defmodule EndPointBlank.Config do
   def masking_rules, do: get().masking_rules
   def mask_hook, do: get().mask_hook
 
+  @doc """
+  Max number of concurrent writes `DelayedWriter` performs per flush tick.
+  Falls back to the struct default (4) if unset or invalid.
+  """
+  def worker_count do
+    case get().worker_count do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 4
+    end
+  end
+
   # URL builders
 
   def authorize_url, do: get().base_url <> "/api/authorize"

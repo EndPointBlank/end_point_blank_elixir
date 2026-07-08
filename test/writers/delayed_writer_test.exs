@@ -3,6 +3,7 @@ defmodule EndPointBlank.Writers.DelayedWriterTest do
 
   import ExUnit.CaptureLog
 
+  alias EndPointBlank.Config
   alias EndPointBlank.Writers.DelayedWriter
 
   # Each test starts its own uniquely-named instance so it doesn't race with
@@ -68,5 +69,89 @@ defmodule EndPointBlank.Writers.DelayedWriterTest do
 
     queue = :sys.get_state(pid)[:errors]
     assert length(queue) == 1_000
+  end
+
+  describe "flush concurrency honors Config.worker_count/0" do
+    setup do
+      # DirectWriter.write runs inside Task.async_stream tasks spawned from
+      # the DelayedWriter process (not the test process), so the stub must
+      # be visible process-wide.
+      Req.Test.set_req_test_to_shared()
+
+      Application.put_env(
+        :end_point_blank_elixir,
+        :req_test_plug,
+        {Req.Test, __MODULE__.ConcurrencyStub}
+      )
+
+      on_exit(fn ->
+        Config.reset()
+        Application.delete_env(:end_point_blank_elixir, :req_test_plug)
+        Req.Test.set_req_test_to_private()
+      end)
+
+      :ok
+    end
+
+    defp start_concurrency_tracker do
+      {:ok, tracker} = Agent.start_link(fn -> %{current: 0, max: 0} end)
+      tracker
+    end
+
+    defp stub_tracking_concurrency(tracker, sleep_ms) do
+      Req.Test.stub(__MODULE__.ConcurrencyStub, fn conn ->
+        Agent.update(tracker, fn %{current: current, max: max} ->
+          %{current: current + 1, max: max(max, current + 1)}
+        end)
+
+        Process.sleep(sleep_ms)
+
+        Agent.update(tracker, fn state -> %{state | current: state.current - 1} end)
+
+        Req.Test.json(conn, %{"ok" => true})
+      end)
+    end
+
+    # Enqueues one full batch (@batch_size payloads, i.e. exactly one chunk)
+    # per given url_key, then triggers and synchronously waits for a flush.
+    defp enqueue_one_batch_per_key(pid, url_keys) do
+      Enum.each(url_keys, &GenServer.cast(pid, {:enqueue, &1, payloads(4)}))
+      :sys.get_state(pid)
+
+      send(pid, :flush)
+      # handle_info(:flush, ...) doesn't reply until every spawned write task
+      # completes, so this synchronizes with the end of the flush.
+      :sys.get_state(pid)
+    end
+
+    test "serializes writes when worker_count is 1", %{pid: pid} do
+      Config.update(worker_count: 1)
+      tracker = start_concurrency_tracker()
+      stub_tracking_concurrency(tracker, 50)
+
+      enqueue_one_batch_per_key(pid, [:requests, :responses, :logs])
+
+      assert Agent.get(tracker, & &1.max) == 1
+    end
+
+    test "parallelizes writes up to the configured worker_count", %{pid: pid} do
+      Config.update(worker_count: 3)
+      tracker = start_concurrency_tracker()
+      stub_tracking_concurrency(tracker, 100)
+
+      enqueue_one_batch_per_key(pid, [:requests, :responses, :logs])
+
+      assert Agent.get(tracker, & &1.max) == 3
+    end
+
+    test "does not exceed worker_count even with more batches in flight", %{pid: pid} do
+      Config.update(worker_count: 2)
+      tracker = start_concurrency_tracker()
+      stub_tracking_concurrency(tracker, 100)
+
+      enqueue_one_batch_per_key(pid, [:requests, :responses, :logs, :errors])
+
+      assert Agent.get(tracker, & &1.max) == 2
+    end
   end
 end
