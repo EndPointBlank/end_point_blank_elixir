@@ -15,6 +15,7 @@ defmodule EndPointBlank.Writers.ResponseWriter do
       body: truncate(conn.resp_body),
       sent_at: utc_now(),
       route: conn.private[:epb_route] || conn.request_path,
+      method: conn.method,
       data: %{},
       source_application_environment_id: RequestStore.get_source_env_id()
     }
