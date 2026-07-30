@@ -8,15 +8,18 @@ defmodule EndPointBlank.Phoenix.Versioned do
         use Phoenix.Controller
         use EndPointBlank.Phoenix.Versioned
 
-        version_of :index, ["v1", "v2"], state: "Current"
-        version_of :index, ["v0"],       state: "Deprecated"
+        version_of :index, ["v1", "v2"]
+        version_of :index, ["v0"]
 
         def index(conn, _params), do: ...
       end
 
-  Multiple calls for the same action are merged — repeating a state appends
-  (de-duped) versions, and additional states are added alongside the existing
-  ones.
+  Lifecycle state (Current, Deprecated, ...) is **not** declared here. It is
+  managed in the EndPointBlank portal, where changing it does not require
+  shipping code. This reports which versions an action serves, and nothing about
+  what they mean.
+
+  Multiple calls for the same action merge, deduplicated, in declaration order.
 
   The registered metadata is read by `EndPointBlank.Phoenix.EndpointRegistrar`
   when it builds the endpoint list sent to the EndPointBlank API at startup.
@@ -24,7 +27,7 @@ defmodule EndPointBlank.Phoenix.Versioned do
 
   defmacro __using__(_opts) do
     quote do
-      import EndPointBlank.Phoenix.Versioned, only: [version_of: 2, version_of: 3]
+      import EndPointBlank.Phoenix.Versioned, only: [version_of: 2]
       Module.register_attribute(__MODULE__, :epb_action_versions, accumulate: false)
       @epb_action_versions %{}
       @before_compile EndPointBlank.Phoenix.Versioned
@@ -32,41 +35,26 @@ defmodule EndPointBlank.Phoenix.Versioned do
   end
 
   @doc """
-  Declares version metadata for `action`. Stores it as a nested
-  `%{action => %{state => versions}}` map, merging with any prior declaration
-  for the same action.
-
-  ## Options
-    * `:state` - e.g. `"Current"`, `"Deprecated"`, `"In Development"` (default: `"Current"`)
+  Declares which versions `action` serves. Stores an `%{action => [versions]}`
+  map, merging with any prior declaration for the same action.
   """
-  defmacro version_of(action, versions, opts \\ []) do
-    state = Keyword.get(opts, :state, "Current")
-
+  defmacro version_of(action, versions) do
     quote do
       @epb_action_versions EndPointBlank.Phoenix.Versioned.__merge__(
                              @epb_action_versions,
                              unquote(action),
-                             unquote(state),
                              unquote(versions)
                            )
     end
   end
 
   @doc false
-  def __merge__(action_versions, action, state, versions) when is_list(versions) do
-    Map.update(
-      action_versions,
-      action,
-      %{state => versions},
-      fn existing_states ->
-        Map.update(
-          existing_states,
-          state,
-          versions,
-          fn prior -> Enum.uniq(prior ++ versions) end
-        )
-      end
-    )
+  # Enum.uniq keeps declaration order, so the manifest stays stable between
+  # deploys instead of churning.
+  def __merge__(action_versions, action, versions) when is_list(versions) do
+    Map.update(action_versions, action, Enum.uniq(versions), fn prior ->
+      Enum.uniq(prior ++ versions)
+    end)
   end
 
   defmacro __before_compile__(_env) do

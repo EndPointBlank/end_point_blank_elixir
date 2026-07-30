@@ -41,13 +41,13 @@ defmodule EndPointBlank.Phoenix.EndpointRegistrar do
         endpoint_versions: controller_versions(controller, action)
       }
     end)
-    |> Enum.reject(fn ep -> ep.endpoint_versions == %{} end)
+    |> Enum.reject(fn ep -> ep.endpoint_versions == [] end)
     |> Enum.uniq()
   end
 
-  # Returns a map of `state_name => [versions]` for the given controller+action,
-  # matching the shape the other client libraries send. Empty map when the
-  # controller has no version metadata.
+  # Returns the list of versions for the given controller+action, matching the
+  # shape the other client libraries send. Empty list when the controller has no
+  # version metadata.
   defp controller_versions(controller, action) do
     # Force the controller to load before introspection — function_exported?/3
     # returns false for unloaded modules, which would otherwise drop every
@@ -58,13 +58,13 @@ defmodule EndPointBlank.Phoenix.EndpointRegistrar do
       versions_map = controller.__epb_versions__()
 
       case Map.get(versions_map, action) do
-        states_map when is_map(states_map) and map_size(states_map) > 0 -> states_map
-        _ -> %{}
+        versions when is_list(versions) and versions != [] -> versions
+        _ -> []
       end
     else
-      %{}
+      []
     end
   rescue
-    _ -> %{}
+    _ -> []
   end
 end
