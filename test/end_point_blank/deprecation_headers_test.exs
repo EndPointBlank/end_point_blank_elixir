@@ -143,5 +143,45 @@ defmodule EndPointBlank.DeprecationHeadersTest do
     test "returns the conn unchanged rather than raising on nonsense", %{conn: conn} do
       assert DeprecationHeaders.put_headers(conn, %{"deprecated_at" => :not_a_date}) == conn
     end
+
+    test "accepts an already-parsed DateTime", %{conn: conn} do
+      {:ok, dt, _} = DateTime.from_iso8601("2026-01-01T00:00:00Z")
+
+      conn = DeprecationHeaders.put_headers(conn, %{"deprecated_at" => dt})
+
+      assert Plug.Conn.get_resp_header(conn, "deprecation") == ["@1767225600"]
+    end
+
+    test "converts a zoned DateTime to GMT rather than relabelling it", %{conn: conn} do
+      zoned = %DateTime{
+        year: 2026,
+        month: 1,
+        day: 1,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        time_zone: "America/New_York",
+        zone_abbr: "EST",
+        utc_offset: -18_000,
+        std_offset: 0
+      }
+
+      conn = DeprecationHeaders.put_headers(conn, %{"sunset_at" => zoned})
+
+      assert Plug.Conn.get_resp_header(conn, "sunset") == ["Thu, 01 Jan 2026 05:00:00 GMT"]
+    end
+
+    test "gives up quietly when the response has already gone out", %{conn: conn} do
+      # Authorization can be answered from cache after an earlier plug has
+      # already sent the response. Losing the header is acceptable; raising
+      # `AlreadySentError` out of a request that already succeeded is not.
+      sent = Plug.Conn.send_resp(conn, 200, "done")
+
+      assert ExUnit.CaptureLog.capture_log(fn ->
+               assert DeprecationHeaders.put_headers(sent, %{
+                        "sunset_at" => "2026-11-11T11:11:11Z"
+                      }) == sent
+             end) =~ "Failed to set deprecation headers"
+    end
   end
 end
