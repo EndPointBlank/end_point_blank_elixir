@@ -36,7 +36,10 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
     client_auth = conn |> Plug.Conn.get_req_header("authorization") |> List.first()
     target_hostname = conn.host
 
-    cache_key = "epb_auth:#{client_auth}:#{path}:#{conn.method}:#{config.app_name}"
+    # The version is part of the key because authorization is decided per
+    # endpoint version, and so is the deprecation carried back with it. Without
+    # it, two callers on different versions of the same route share one entry.
+    cache_key = "epb_auth:#{client_auth}:#{path}:#{conn.method}:#{config.app_name}:#{version}"
 
     case AuthCache.get(cache_key) do
       {:hit, {source_env_id, deprecation}} ->
