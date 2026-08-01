@@ -6,7 +6,17 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
   """
 
   require Logger
-  alias EndPointBlank.{AccessTokens, AuthCache, Config, Authorization, Http, RequestStore, VersionFinder}
+
+  alias EndPointBlank.{
+    AccessTokens,
+    AuthCache,
+    Config,
+    Authorization,
+    DeprecationHeaders,
+    Http,
+    RequestStore,
+    VersionFinder
+  }
 
   @doc """
   Authorizes `conn` against the EndPointBlank service.
@@ -29,7 +39,16 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
     cache_key = "epb_auth:#{client_auth}:#{path}:#{conn.method}:#{config.app_name}"
 
     case AuthCache.get(cache_key) do
+      {:hit, {source_env_id, deprecation}} ->
+        # The cache carries the deprecation as well as the env id. Authorization
+        # is cached per client+route, so caching only the env id would limit the
+        # Deprecation and Sunset headers to cache misses — roughly one request
+        # in N, which reads as a flaky feature rather than a missing one.
+        RequestStore.put_source_env_id(source_env_id)
+        {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
+
       {:hit, source_env_id} ->
+        # An entry cached before this release, holding only the env id.
         RequestStore.put_source_env_id(source_env_id)
         {:ok, conn}
 
@@ -54,15 +73,20 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
             {:ok, %Req.Response{status: 401}} ->
               if String.starts_with?(auth, "Bearer ") do
                 AccessTokens.remove(target_hostname)
-                retry_auth = case AccessTokens.token(target_hostname) do
-                  nil -> Authorization.basic_header()
-                  fresh -> "Bearer #{fresh}"
-                end
+
+                retry_auth =
+                  case AccessTokens.token(target_hostname) do
+                    nil -> Authorization.basic_header()
+                    fresh -> "Bearer #{fresh}"
+                  end
+
                 Http.post(Config.authorize_url(), body, retry_auth)
               else
                 result
               end
-            _ -> result
+
+            _ ->
+              result
           end
 
         case result do
@@ -73,9 +97,15 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
                 _ -> nil
               end
 
-            AuthCache.put(cache_key, source_env_id)
+            deprecation =
+              case resp_body do
+                %{"deprecation" => %{} = block} -> block
+                _ -> nil
+              end
+
+            AuthCache.put(cache_key, {source_env_id, deprecation})
             RequestStore.put_source_env_id(source_env_id)
-            {:ok, conn}
+            {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
 
           {:ok, %Req.Response{status: s, body: b}} ->
             Logger.error("[EndPointBlank] Authorization failed: status=#{s} body=#{inspect(b)}")
