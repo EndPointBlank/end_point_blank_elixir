@@ -304,6 +304,16 @@ defmodule EndPointBlank.MaskingTest do
       out = Masking.apply(payload, :request, [r], nil)
       assert out.path == "[]"
     end
+
+    test "an alternation whose first branch did not match expands to empty string" do
+      # An unmatched group before a matched one comes back as offset -1, which
+      # `binary_part/3` rejects. Alternations are a routine way to write one rule
+      # for several secrets, so this must not raise inside the request path.
+      payload = %{path: "/token"}
+      r = rule("path", regex: "(secret)|(token)", replacement_value: "[$1$2]")
+
+      assert Masking.apply(payload, :request, [r], nil).path == "/[token]"
+    end
   end
 
   describe "hook" do
@@ -318,6 +328,54 @@ defmodule EndPointBlank.MaskingTest do
     test "applies with no rules and no hook" do
       payload = %{request: ~s({"a":"b"})}
       assert Masking.apply(payload, :request, nil, nil) == payload
+    end
+
+    test "ignores a hook that is not a two-argument function" do
+      # Masking sits in the request path of the host application. A hook
+      # configured with the wrong arity must degrade to no hook, not raise on
+      # every request.
+      payload = %{request: ~s({"a":"b"})}
+
+      assert Masking.apply(payload, :request, [], fn p -> Map.put(p, :extra, 1) end) == payload
+      assert Masking.apply(payload, :request, [], "not a function") == payload
+    end
+  end
+
+  describe "values a rule cannot be applied to" do
+    test "leaves the payload alone when the targeted field is absent" do
+      payload = %{path: "/a"}
+
+      assert Masking.apply(payload, :request, [rule("request_body", path: "$.x")], nil) == payload
+    end
+
+    test "leaves the payload alone when the targeted field is nil" do
+      payload = %{request: nil}
+
+      assert Masking.apply(payload, :request, [rule("request_body", path: "$.x")], nil) == payload
+    end
+
+    test "ignores a rule whose target is unknown for the record type" do
+      payload = %{body: ~s({"a":"b"})}
+
+      assert Masking.apply(payload, :response, [rule("request_body", path: "$.a")], nil) ==
+               payload
+    end
+
+    test "leaves a non-string, non-map field untouched" do
+      # Headers are a map and bodies are strings, but the response payload also
+      # carries a numeric status that a mis-targeted rule could reach.
+      payload = %{headers: 404}
+
+      assert Masking.apply(payload, :request, [rule("request_headers", regex: "\\d")], nil) ==
+               payload
+    end
+
+    test "recurses into lists and leaves non-string leaves as they are" do
+      payload = %{request: ~s({"xs":["a1",2,true,null]})}
+
+      out = Masking.apply(payload, :request, [rule("request_body", regex: "\\d")], nil)
+
+      assert Jason.decode!(out.request) == %{"xs" => ["a...", 2, true, nil]}
     end
   end
 end
