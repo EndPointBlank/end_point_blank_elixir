@@ -1,7 +1,35 @@
 defmodule EndPointBlank do
-  @version "0.3.2"
+  @app :end_point_blank_elixir
 
-  def version, do: @version
+  @doc """
+  The version of this library, as published in `mix.exs`.
+
+  Read from the loaded application spec rather than restated as a module
+  attribute here. The literal was previously duplicated between `mix.exs` and
+  this module and the two never agreed: `mix.exs` reached 0.4.0 while this
+  reported 0.3.2, so `lib_version` on every endpoint-update payload named a
+  version that was never released. The portal answers "which customers run
+  which SDK build" from that field.
+
+  The `.app` file this reads is regenerated from `mix.exs` on every compile,
+  so there is no baked-in copy that can go stale, and each dependency carries
+  its own spec — no ambiguity about whose version is read when this library is
+  consumed as a dep.
+  """
+  @spec version() :: String.t()
+  def version do
+    case :application.get_key(@app, :vsn) do
+      {:ok, vsn} ->
+        List.to_string(vsn)
+
+      :undefined ->
+        # Only reachable if the application was never loaded (an escript, or a
+        # bare `:code` path). Raise rather than return "" — a blank
+        # `lib_version` would silently poison the portal's rollout data, which
+        # is the failure this function exists to prevent.
+        raise "#{inspect(@app)} is not loaded, so its version cannot be determined"
+    end
+  end
 
   @doc """
   Configures the EndPointBlank library.

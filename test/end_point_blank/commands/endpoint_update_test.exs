@@ -78,7 +78,11 @@ defmodule EndPointBlank.Commands.EndpointUpdateTest do
     test "reports the SDK version the process is actually running", %{body: body} do
       # Intake uses this to tell which client build produced a manifest, so it
       # must track the library rather than being a literal typed in twice.
-      assert body["lib_version"] == EndPointBlank.version()
+      #
+      # Compared against mix.exs rather than against EndPointBlank.version():
+      # asserting the payload equals the same value it is built from passed
+      # happily while both named 0.3.2, a version that was never released.
+      assert body["lib_version"] == Mix.Project.config()[:version]
     end
 
     test "authenticates with Basic credentials", %{auth: auth} do
