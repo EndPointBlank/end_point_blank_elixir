@@ -1,23 +1,24 @@
 defmodule EndPointBlank.Writers.RequestWriter do
   @moduledoc "Sends inbound request metadata to the EndPointBlank API."
 
-  alias EndPointBlank.{Config, Masking, RequestStore, VersionFinder, Writers}
+  alias EndPointBlank.{BaseUrl, Config, Masking, RequestStore, VersionFinder, Writers}
 
   def write(%Plug.Conn{} = conn) do
     config = Config.get()
 
-    payload = %{
-      app_name: config.app_name,
-      env: config.environment,
-      uuid: RequestStore.get_uuid(),
-      host: conn.host,
-      headers: Map.new(conn.req_headers),
-      path: conn.request_path,
-      http_method: conn.method,
-      endpoint_version: VersionFinder.find(conn),
-      request: read_body(conn),
-      sent_at: utc_now()
-    }
+    payload =
+      %{
+        app_name: config.app_name,
+        env: config.environment,
+        uuid: RequestStore.get_uuid(),
+        headers: Map.new(conn.req_headers),
+        path: conn.request_path,
+        http_method: conn.method,
+        endpoint_version: VersionFinder.find(conn),
+        request: read_body(conn),
+        sent_at: utc_now()
+      }
+      |> Map.merge(BaseUrl.resolve(conn, config.trust_proxy_headers))
 
     payload = Masking.apply(payload, :request, Config.masking_rules(), Config.mask_hook())
 
