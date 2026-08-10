@@ -67,6 +67,27 @@ defmodule EndPointBlankTest do
     test "reports a semantic version string" do
       assert EndPointBlank.version() =~ ~r/^\d+\.\d+\.\d+/
     end
+
+    test "reports the version mix.exs publishes" do
+      # Anchored to the manifest, not to the value version/0 is built from.
+      # This module used to carry its own @version literal, which sat at 0.3.2
+      # while mix.exs shipped 0.4.0 — a shape-only assertion passed the whole
+      # time, so every payload named a version that was never released.
+      assert EndPointBlank.version() == Mix.Project.config()[:version]
+    end
+
+    test "is not restated as a literal anywhere in lib/" do
+      # The guard that actually matters. Correcting the value is a one-time
+      # fix; what let it rot was the version living in two hand-maintained
+      # copies. Reading the app spec only helps while nothing reintroduces a
+      # literal, so fail the build rather than trusting reviewers to notice.
+      offenders =
+        "lib/**/*.ex"
+        |> Path.wildcard()
+        |> Enum.filter(&(File.read!(&1) =~ ~r/@version\s+"\d+\.\d+/))
+
+      assert offenders == []
+    end
   end
 
   describe "worker_count/0" do
