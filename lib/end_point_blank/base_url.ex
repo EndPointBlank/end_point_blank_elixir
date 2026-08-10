@@ -39,17 +39,32 @@ defmodule EndPointBlank.BaseUrl do
   def resolve(conn, trust_proxy_headers \\ true)
 
   def resolve(%Plug.Conn{} = conn, trust_proxy_headers) do
-    forwarded_proto = if trust_proxy_headers, do: last_hop(header(conn, "x-forwarded-proto"))
-    forwarded_host = if trust_proxy_headers, do: last_hop(header(conn, "x-forwarded-host"))
-    forwarded_port = if trust_proxy_headers, do: last_hop(header(conn, "x-forwarded-port"))
+    forwarded_scheme =
+      if trust_proxy_headers, do: clean_scheme(last_hop(header(conn, "x-forwarded-proto")))
 
-    proxied =
-      not is_nil(forwarded_proto) or not is_nil(forwarded_host) or not is_nil(forwarded_port)
+    forwarded_port =
+      if trust_proxy_headers, do: parse_port(last_hop(header(conn, "x-forwarded-port")))
+
+    # host is never proxy-gated the way scheme/port are below: it was already
+    # caller-controlled before this feature existed (conn.host comes straight
+    # from the Host header), so a valid X-Forwarded-Host says nothing new about
+    # whether the connection's scheme/port can still be trusted. Only a
+    # validated forwarded scheme or port does that -- see `proxied` below.
+    forwarded_authority =
+      if trust_proxy_headers, do: usable_authority(last_hop(header(conn, "x-forwarded-host")))
+
+    # A forwarded header counts as evidence of a proxy only once its last hop
+    # has parsed into something usable for that field. A blank, whitespace-only
+    # or malformed value is indistinguishable from the header never having been
+    # sent at all, and must not block the fallback below for any field --
+    # including its own (an attacker sending garbage in one header should not
+    # be able to blank a field a legitimate value would have supplied).
+    proxied = not is_nil(forwarded_scheme) or not is_nil(forwarded_port)
 
     {host_part, authority_port} =
-      split_authority(forwarded_host || header(conn, "host") || conn.host)
+      forwarded_authority || split_authority(header(conn, "host") || conn.host)
 
-    scheme = clean_scheme(forwarded_proto || if(proxied, do: nil, else: conn.scheme))
+    scheme = forwarded_scheme || if(proxied, do: nil, else: clean_scheme(conn.scheme))
     host = clean_host(host_part)
 
     port =
@@ -110,6 +125,17 @@ defmodule EndPointBlank.BaseUrl do
 
   defp split_authority(_), do: {nil, nil}
 
+  # Validates an x-forwarded-host value the same way the final host is
+  # validated, so a malformed value can't win the authority fallback in
+  # resolve/2 and lock out the literal Host header (or conn.host) it should
+  # have fallen through to instead.
+  defp usable_authority(nil), do: nil
+
+  defp usable_authority(value) do
+    {host_part, port_part} = split_authority(value)
+    if clean_host(host_part), do: {host_part, port_part}
+  end
+
   defp clean_scheme(value) when is_atom(value) and not is_nil(value),
     do: clean_scheme(Atom.to_string(value))
 
@@ -136,6 +162,13 @@ defmodule EndPointBlank.BaseUrl do
 
     cond do
       host == "" -> nil
+      # DNS caps a hostname at 253 characters, so anything longer cannot be a
+      # real hostname -- X-Forwarded-Host gets no length validation from
+      # Bandit or Cowboy, so without this a caller could make the SDK report
+      # an arbitrarily long host. Dropped rather than truncated: a truncated
+      # value would look like a plausible, wrong host, and the portal reads
+      # this field verbatim to assemble a base URL.
+      byte_size(host) > 253 -> nil
       Regex.match?(~r/\A[a-z0-9._-]+\z/, host) -> host
       Regex.match?(~r/\A\[[0-9a-f:.]+\]\z/, host) -> host
       true -> nil
@@ -144,19 +177,33 @@ defmodule EndPointBlank.BaseUrl do
 
   defp clean_host(_), do: nil
 
-  defp clean_port(value, scheme) when is_integer(value), do: usable_port(value, scheme)
-
-  defp clean_port(value, scheme) when is_binary(value) do
-    raw = String.trim(value)
-
-    if Regex.match?(~r/\A[0-9]{1,5}\z/, raw),
-      do: usable_port(String.to_integer(raw), scheme),
-      else: nil
+  # Digit-shape and range check only, independent of scheme -- used both to
+  # decide whether a forwarded port counts as proxy evidence in resolve/2 and
+  # as the first stage of clean_port/2 below.
+  defp parse_port(value) when is_integer(value) do
+    if value >= 1 and value <= 65_535, do: value
   end
 
-  defp clean_port(_, _), do: nil
+  defp parse_port(value) when is_binary(value) do
+    raw = String.trim(value)
+    if Regex.match?(~r/\A[0-9]{1,5}\z/, raw), do: parse_port(String.to_integer(raw))
+  end
 
-  defp usable_port(port, _scheme) when port < 1 or port > 65_535, do: nil
+  defp parse_port(_), do: nil
+
+  defp clean_port(value, scheme) do
+    case parse_port(value) do
+      nil -> nil
+      port -> usable_port(port, scheme)
+    end
+  end
+
+  # A port can only be judged "the scheme's default, so omit it" once the
+  # scheme itself is known. An unresolved scheme leaves a parsed port with
+  # nothing to classify it against -- reporting it anyway would let the same
+  # origin be written two ways depending on whether a proxy happened to also
+  # send X-Forwarded-Proto. Never synthesize or infer: omit rather than guess.
+  defp usable_port(_port, nil), do: nil
 
   defp usable_port(port, scheme) do
     if Map.get(@default_ports, scheme) == port, do: nil, else: port

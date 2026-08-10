@@ -131,4 +131,83 @@ defmodule EndPointBlank.BaseUrlTest do
 
     assert resolved == %{scheme: "https", host: "[2001:db8::1]", port: 8443}
   end
+
+  test "omits the port when the scheme cannot be resolved, even with a syntactically valid forwarded port" do
+    # X-Forwarded-Port "443" parses fine on its own, but with no
+    # X-Forwarded-Proto the scheme is unresolved, so there is nothing to
+    # classify 443 against (default for https, not for http). Reporting it
+    # anyway would let the same origin be written two ways depending on
+    # whether a proxy happened to also send X-Forwarded-Proto -- never
+    # synthesize or infer, omit instead.
+    resolved =
+      BaseUrl.resolve(
+        conn([], [
+          {"x-forwarded-host", "api.example.com"},
+          {"x-forwarded-port", "443"}
+        ])
+      )
+
+    assert resolved == %{host: "api.example.com"}
+  end
+
+  test "ignores a malformed forwarded port rather than blanking the port and scheme" do
+    # X-Forwarded-Port is garbage and stands alone -- no X-Forwarded-Proto, no
+    # X-Forwarded-Host -- so nothing here counts as proxy evidence. The request
+    # resolves exactly as if the header were never sent: scheme from the
+    # connection, host and port from the Host header's authority.
+    resolved =
+      BaseUrl.resolve(
+        conn([port: 8080], [
+          {"host", "api.example.com:9000"},
+          {"x-forwarded-port", "not-a-port"}
+        ])
+      )
+
+    assert resolved == %{scheme: "https", host: "api.example.com", port: 9000}
+  end
+
+  test "ignores a malformed forwarded proto rather than erasing the scheme" do
+    # X-Forwarded-Proto is garbage, so it is not proxy evidence either -- only
+    # X-Forwarded-Host is valid evidence here, and (unlike scheme/port) a valid
+    # X-Forwarded-Host was never sufficient on its own to distrust the
+    # connection's scheme. The junk proto falls out of the picture entirely
+    # rather than forcing the scheme to be omitted.
+    resolved =
+      BaseUrl.resolve(
+        conn([], [
+          {"x-forwarded-proto", "not a scheme"},
+          {"x-forwarded-host", "api.example.com"}
+        ])
+      )
+
+    assert resolved[:scheme] == "https"
+    assert resolved[:host] == "api.example.com"
+  end
+
+  test "drops a forwarded host longer than a DNS hostname can be" do
+    # DNS caps a hostname at 253 characters. X-Forwarded-Host gets no length
+    # validation from Bandit or Cowboy, so without this check a caller could
+    # make the SDK report an arbitrarily long host. Dropped, not truncated --
+    # a truncated value would look like a plausible, wrong host.
+    long_host = String.duplicate("a", 300)
+
+    resolved =
+      BaseUrl.resolve(
+        conn([host: nil], [
+          {"x-forwarded-proto", "https"},
+          {"x-forwarded-host", long_host}
+        ])
+      )
+
+    refute Map.has_key?(resolved, :host)
+    assert resolved[:scheme] == "https"
+  end
+
+  test "keeps a host at exactly the DNS length limit and drops one byte over" do
+    at_limit = String.duplicate("a", 253)
+    over_limit = String.duplicate("a", 254)
+
+    assert BaseUrl.resolve(conn([], [{"host", at_limit}]))[:host] == at_limit
+    refute BaseUrl.resolve(conn([], [{"host", over_limit}])) |> Map.has_key?(:host)
+  end
 end
