@@ -32,6 +32,7 @@ defmodule EndPointBlank.Config do
     log_mode: :direct,
     worker_count: 4,
     cache_ttl: 300,
+    trust_proxy_headers: true,
     masking_rules: []
   ]
 

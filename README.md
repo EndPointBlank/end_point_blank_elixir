@@ -98,6 +98,7 @@ env var > built-in default**.
 | Write mode: `:direct` (synchronous HTTP per payload) or `:delayed` (batched background queue) | `:log_mode` | — (`configure/1` only) | `:direct` |
 | Reserved for future writer pooling; not currently read by any writer | `:worker_count` | — (`configure/1` only) | `4` |
 | Authorization-cache TTL in seconds (`EndPointBlank.AuthCache`) | `:cache_ttl` | — (`configure/1` only) | `300` |
+| Whether the per-request `scheme`/`host`/`port` report honors `x-forwarded-proto`/`-host`/`-port` (see [Reported base URL](#reported-base-url)) | `:trust_proxy_headers` | — (`configure/1` only) | `true` |
 | Ordered list of masking rule maps (see [Data masking](#data-masking)) | `:masking_rules` | — (`configure/1` only) | `[]` |
 
 ### Configure example (all settings)
@@ -114,9 +115,44 @@ EndPointBlank.configure(
   log_mode: :delayed,
   token_ttl: 3600,
   cache_ttl: 300,
+  trust_proxy_headers: true,
   version_finder: fn conn -> Plug.Conn.get_req_header(conn, "x-api-version") |> List.first() end
 )
 ```
+
+### Reported base URL
+
+Every request payload carries the base URL the *caller* used, as three separate
+fields — `scheme`, `host` and `port`. A field that cannot be resolved is omitted
+rather than sent as null. EndPointBlank uses these to fill in an application
+environment's base URL for you, instead of asking someone to type it.
+
+By default the library honors `x-forwarded-proto`, `x-forwarded-host` and
+`x-forwarded-port`, reading the **last** comma-separated hop, straight off
+`conn.req_headers`. Plug has no notion of a trusted proxy unless your
+application installs `Plug.RewriteOn` itself, which is why this client could not
+previously see through a load balancer at all. It resolves the headers the same
+way the Ruby, JS, Python and Java clients do, so all five answer identically for
+the same request.
+
+**Turn this off if your application is reachable directly, with no proxy in
+front of it** — or if you would simply rather report nothing than report
+something a caller could influence:
+
+```elixir
+EndPointBlank.configure(trust_proxy_headers: false)
+```
+
+With it off, the `x-forwarded-*` headers are ignored entirely and `scheme`,
+`host` and `port` come from the conn and the `host` header only.
+
+It defaults to `true` because the alternative is worse for almost everyone. Most
+production deployments sit behind an ALB, nginx, Caddy or an Ingress, and a
+client that ignored the forwarded headers there would not report *nothing* — it
+would confidently report an internal hostname on an internal port. `host` is
+caller-controlled either way (`conn.host` comes from the `host` header), and
+none of these three values is ever used as an identity or authorization key, so
+the worst case is a wrong *suggestion* that an admin has to approve.
 
 ### 12-factor / env-var example
 
