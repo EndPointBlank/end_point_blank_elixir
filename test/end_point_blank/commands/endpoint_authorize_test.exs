@@ -460,13 +460,13 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
 
       capture_log(fn -> EndpointAuthorize.authorize(conn(ctx)) end)
 
-      refute AccessTokens.exists?(ctx.hostname)
+      refute AccessTokens.exists?()
     end
 
     test "is not retried when the rejected call already used Basic credentials", ctx do
       # Retrying Basic with Basic would double every request against an intake
       # that is simply refusing these credentials.
-      AccessTokens.remove(ctx.hostname)
+      AccessTokens.clear()
 
       stub_intake(%{@authorize_path => responding(401, %{"error" => "nope"})})
 

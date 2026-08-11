@@ -15,7 +15,7 @@ defmodule EndPointBlank.Authorization do
   Otherwise returns `"Basic <credentials>"`.
   """
   def header(hostname \\ nil) do
-    if hostname && AccessTokens.exists?(hostname) do
+    if hostname && AccessTokens.exists?() do
       token = AccessTokens.token(hostname)
       "Bearer #{token}"
     else

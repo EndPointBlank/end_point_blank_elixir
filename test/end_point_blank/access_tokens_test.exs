@@ -5,6 +5,11 @@ defmodule EndPointBlank.AccessTokensTest do
   in flight. Both are asserted through real TTLs rather than sleeps: the buffer
   is compared against wall-clock now, so a 60-second token is deterministically
   "near expiry" without waiting for anything.
+
+  Intake issues a token against the application environment the authenticating
+  credential belongs to, not against the hostname the request names. A node
+  authenticates as one application environment, so it holds one token and the
+  hostname is only ever part of the generation payload.
   """
   use ExUnit.Case, async: false
 
@@ -18,6 +23,10 @@ defmodule EndPointBlank.AccessTokensTest do
     Application.put_env(:end_point_blank_elixir, :req_test_plug, {Req.Test, __MODULE__.Stub})
     Config.update(client_id: "cid", client_secret: "csecret", base_url: "https://intake.test")
 
+    # One token is now shared by the whole node, so a leftover from another test
+    # would be served here rather than sitting under its own hostname key.
+    AccessTokens.clear()
+
     on_exit(fn ->
       Config.reset()
       AccessTokens.clear()
@@ -25,7 +34,6 @@ defmodule EndPointBlank.AccessTokensTest do
       Req.Test.set_req_test_to_private()
     end)
 
-    # AccessTokens is a supervised singleton shared by the whole suite.
     unique = System.unique_integer([:positive])
     %{hostname: "host-#{unique}.test"}
   end
@@ -75,13 +83,16 @@ defmodule EndPointBlank.AccessTokensTest do
       assert mint_count() == 1
     end
 
-    test "keeps each hostname's token separate", %{hostname: hostname} do
+    test "serves every hostname from the one token", %{hostname: hostname} do
+      # The hostname arrives on the Host header, so the caller chooses it.
+      # Minting per hostname meant a novel value cost a token exchange and a
+      # database lookup on intake, for a token never scoped to the hostname.
       stub_minting()
 
-      first = AccessTokens.token(hostname)
-      second = AccessTokens.token("other-" <> hostname)
-
-      refute first == second
+      assert AccessTokens.token(hostname) == "token-1"
+      assert AccessTokens.token("other-" <> hostname) == "token-1"
+      assert AccessTokens.token("never-seen-" <> hostname) == "token-1"
+      assert mint_count() == 1
     end
 
     test "asks for a token for the hostname it was called with", %{hostname: hostname} do
@@ -116,16 +127,16 @@ defmodule EndPointBlank.AccessTokensTest do
     end
   end
 
-  describe "exists?/1" do
-    test "is false for a hostname never seen", %{hostname: hostname} do
-      refute AccessTokens.exists?(hostname)
+  describe "exists?/0" do
+    test "is false before any token is minted" do
+      refute AccessTokens.exists?()
     end
 
-    test "is true once a long-lived token is cached", %{hostname: hostname} do
+    test "is true once a long-lived token is held", %{hostname: hostname} do
       stub_minting()
       AccessTokens.token(hostname)
 
-      assert AccessTokens.exists?(hostname)
+      assert AccessTokens.exists?()
     end
 
     test "is false for a token too short-lived to be worth sending", %{hostname: hostname} do
@@ -134,40 +145,53 @@ defmodule EndPointBlank.AccessTokensTest do
       stub_minting(ttl_seconds: 10)
       AccessTokens.token(hostname)
 
-      refute AccessTokens.exists?(hostname)
+      refute AccessTokens.exists?()
     end
   end
 
-  describe "eviction" do
-    test "remove/1 drops the token so the next caller mints a fresh one", %{hostname: hostname} do
+  describe "invalidate/1" do
+    test "drops the token so the next caller mints a fresh one", %{hostname: hostname} do
       stub_minting()
-      assert AccessTokens.token(hostname) == "token-1"
+      current = AccessTokens.token(hostname)
 
-      AccessTokens.remove(hostname)
+      AccessTokens.invalidate(current)
 
       assert AccessTokens.token(hostname) == "token-2"
     end
 
-    test "remove/1 leaves other hostnames alone", %{hostname: hostname} do
+    test "ignores a token that has already been replaced", %{hostname: hostname} do
+      # What stops a 401 from stampeding. Every request in flight when a token
+      # is rejected reports the same stale value; only the first should cause a
+      # mint, because the rest are holding a token that has already been
+      # replaced and clearing for them would discard a good one.
       stub_minting()
-      other = "other-" <> hostname
+      stale = AccessTokens.token(hostname)
+      AccessTokens.invalidate(stale)
       AccessTokens.token(hostname)
-      kept = AccessTokens.token(other)
 
-      AccessTokens.remove(hostname)
+      AccessTokens.invalidate(stale)
 
-      assert AccessTokens.token(other) == kept
+      assert AccessTokens.token(hostname) == "token-2"
+      assert mint_count() == 2
     end
 
-    test "clear/0 drops every hostname", %{hostname: hostname} do
+    test "ignores nil", %{hostname: hostname} do
       stub_minting()
       AccessTokens.token(hostname)
-      AccessTokens.token("other-" <> hostname)
+
+      AccessTokens.invalidate(nil)
+
+      assert AccessTokens.token(hostname) == "token-1"
+      assert mint_count() == 1
+    end
+
+    test "clear/0 drops the token", %{hostname: hostname} do
+      stub_minting()
+      AccessTokens.token(hostname)
 
       AccessTokens.clear()
 
-      refute AccessTokens.exists?(hostname)
-      refute AccessTokens.exists?("other-" <> hostname)
+      refute AccessTokens.exists?()
     end
   end
 
@@ -190,7 +214,7 @@ defmodule EndPointBlank.AccessTokensTest do
       end)
 
       assert AccessTokens.token(hostname) == nil
-      refute AccessTokens.exists?(hostname)
+      refute AccessTokens.exists?()
     end
 
     test "returns nil when the response has no token at all", %{hostname: hostname} do
@@ -210,6 +234,20 @@ defmodule EndPointBlank.AccessTokensTest do
 
       stub_minting()
       assert AccessTokens.token(hostname) == "token-1"
+    end
+
+    test "a held token is served without minting, so a refused hostname cannot disturb it", %{
+      hostname: hostname
+    } do
+      stub_minting()
+      assert AccessTokens.token(hostname) == "token-1"
+
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(422) |> Req.Test.json(%{"error" => "unknown application"})
+      end)
+
+      assert AccessTokens.token("bogus-" <> hostname) == "token-1"
+      assert AccessTokens.exists?()
     end
   end
 end

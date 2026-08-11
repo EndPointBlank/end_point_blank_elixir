@@ -75,7 +75,11 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
           case result do
             {:ok, %Req.Response{status: 401}} ->
               if String.starts_with?(auth, "Bearer ") do
-                AccessTokens.remove(target_hostname)
+                # Hand back the token that was rejected rather than clearing
+                # whatever is held now: under load it may already have been
+                # replaced by another request that got here first, and dropping
+                # that one would send the whole wave to mint again.
+                AccessTokens.invalidate(String.replace_prefix(auth, "Bearer ", ""))
 
                 retry_auth =
                   case AccessTokens.token(target_hostname) do

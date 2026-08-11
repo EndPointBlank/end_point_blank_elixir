@@ -59,16 +59,19 @@ defmodule EndPointBlank.AuthorizationTest do
       assert Authorization.header() == Authorization.basic_header()
     end
 
-    test "prefers a cached token for the host", %{hostname: hostname} do
+    test "prefers the held token", %{hostname: hostname} do
       cache_token(hostname, "cached-token")
 
       assert Authorization.header(hostname) == "Bearer cached-token"
     end
 
-    test "does not offer one host's token to another", %{hostname: hostname} do
+    test "offers the held token whatever host is named", %{hostname: hostname} do
+      # Intake binds a token to the application environment the credential
+      # belongs to, not to the hostname the request names, so there is no
+      # "another host's token" to withhold — it is this node's one token.
       cache_token(hostname, "cached-token")
 
-      assert Authorization.header("elsewhere." <> hostname) == Authorization.basic_header()
+      assert Authorization.header("elsewhere." <> hostname) == "Bearer cached-token"
     end
   end
 end
