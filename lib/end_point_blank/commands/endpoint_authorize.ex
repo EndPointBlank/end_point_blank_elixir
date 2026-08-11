@@ -10,6 +10,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
   alias EndPointBlank.{
     AccessTokens,
     AuthCache,
+    BaseUrl,
     Config,
     Authorization,
     DeprecationHeaders,
@@ -34,7 +35,8 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
     path = path || conn.request_path
     version = version || VersionFinder.find(conn)
     client_auth = conn |> Plug.Conn.get_req_header("authorization") |> List.first()
-    target_hostname = conn.host
+    # Host header only, never the forwarded chain -- see BaseUrl.hostname/1.
+    target_hostname = BaseUrl.hostname(conn)
 
     # The version is part of the key because authorization is decided per
     # endpoint version, and so is the deprecation carried back with it. Without

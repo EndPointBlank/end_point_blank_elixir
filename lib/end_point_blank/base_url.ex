@@ -81,6 +81,44 @@ defmodule EndPointBlank.BaseUrl do
 
   def resolve(_, _), do: %{}
 
+  @doc """
+  The hostname alone, for the authorize path.
+
+  Deliberately not `resolve/2`'s `:host`: reads the `host` header only, never
+  the forwarded chain, whatever `trust_proxy_headers` is set to. The value feeds
+  `target_hostname` and the access-token cache key, and the portal resolves an
+  application environment from it -- a value matching no registered row is a
+  hard 422 with no fallback, not a cache miss.
+
+  Composed from the same `split_authority/1` and `clean_host/1` pair `resolve/2`
+  uses, so lowercasing and shape and length validation are identical between the
+  two; only the authority's source differs, plus the IPv6 fix-up below.
+  """
+  @spec hostname(Plug.Conn.t() | any()) :: String.t() | nil
+  def hostname(%Plug.Conn{} = conn) do
+    {host_part, _authority_port} =
+      split_authority(header(conn, "host") || bracket_ipv6(conn.host))
+
+    clean_host(host_part)
+  end
+
+  def hostname(_), do: nil
+
+  # Cowboy, Bandit and Plug.Test all strip the brackets off an IPv6 literal
+  # before setting conn.host, so the bare form is what a real IPv6 request
+  # arrives as -- and clean_host/1 requires brackets, since a bare literal is
+  # indistinguishable from a malformed name. Restore them rather than dropping
+  # the host, so this SDK reports what the other four report.
+  defp bracket_ipv6(value) when is_binary(value) do
+    cond do
+      String.starts_with?(value, "[") -> value
+      length(String.split(value, ":")) > 2 -> "[" <> value <> "]"
+      true -> value
+    end
+  end
+
+  defp bracket_ipv6(other), do: other
+
   defp header(conn, name) do
     case Plug.Conn.get_req_header(conn, name) do
       [] -> nil

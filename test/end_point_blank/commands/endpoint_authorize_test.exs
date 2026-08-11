@@ -535,4 +535,38 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
       assert RequestStore.get_source_env_id() == nil
     end
   end
+
+  describe "the hostname it reports and keys its token cache on" do
+    test "lowercases it", ctx do
+      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+
+      EndpointAuthorize.authorize(conn(ctx, hostname: "API.Example.TEST"))
+
+      assert List.first(authorize_calls()).body["target_hostname"] == "api.example.test"
+    end
+
+    # Cowboy, Bandit and Plug.Test.conn/2 all strip the brackets off an IPv6
+    # literal before setting conn.host, so this is what a real IPv6 request
+    # looks like by the time it reaches this conn -- the conn(ctx, hostname:
+    # ...) helper sets :host as a struct field and writes no header, exactly
+    # like a real adapter.
+    test "re-brackets an IPv6 host that arrived on conn.host without brackets", ctx do
+      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+
+      EndpointAuthorize.authorize(conn(ctx, hostname: "2001:db8::1"))
+
+      assert List.first(authorize_calls()).body["target_hostname"] == "[2001:db8::1]"
+    end
+
+    test "reports no hostname and authenticates with Basic when the host is unusable", ctx do
+      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+
+      EndpointAuthorize.authorize(conn(ctx, hostname: "api.example.test/../evil"))
+
+      call = List.first(authorize_calls())
+      assert call.body["target_hostname"] == nil
+      assert call.auth == "Basic " <> Base.encode64("cid:csecret")
+      assert Enum.filter(intake_calls(), &(&1.path == @token_path)) == []
+    end
+  end
 end
