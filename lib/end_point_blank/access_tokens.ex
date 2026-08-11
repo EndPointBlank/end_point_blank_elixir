@@ -20,6 +20,9 @@ defmodule EndPointBlank.AccessTokens do
   @refresh_buffer_seconds 120
   @min_ttl_seconds 30
 
+  # How long to hold a token whose expiry the intake sent unreadably.
+  @default_lifetime_seconds 3600
+
   # Minting happens inside the GenServer, so a caller waits out the HTTP round
   # trip. `Http.post/3` allows three attempts of up to five seconds each with
   # 200 ms between them, so a mint against a hung intake can run for about
@@ -125,21 +128,33 @@ defmodule EndPointBlank.AccessTokens do
   # A failed mint discards whatever was held rather than leaving it behind. Only
   # a token already inside the refresh buffer reaches a mint, so what would be
   # kept is close to death — and exists?/0, whose floor is 30 seconds, would go
-  # on calling it usable right up to the 401 it is about to earn. An unreadable
-  # expiry is the same case: a token with no usable lifetime is worse than none,
-  # because nothing could tell when to replace it.
+  # on calling it usable right up to the 401 it is about to earn.
   defp generate_and_store(hostname, _state) do
     case safe_generate(hostname) do
-      %{"token" => token, "expired_at" => expires_at_str} ->
-        case DateTime.from_iso8601(expires_at_str) do
-          {:ok, dt, _} -> {token, {token, dt}}
-          _ -> {nil, nil}
-        end
+      %{"token" => token} = payload when is_binary(token) and token != "" ->
+        {token, {token, parse_expiry(Map.get(payload, "expired_at"))}}
 
       _ ->
         {nil, nil}
     end
   end
+
+  # An unreadable or absent expiry keeps the token for a default hour, which is
+  # what the other four SDKs do. A guess, but a working one: treating the token
+  # as unusable instead means a mint on every inbound request for as long as the
+  # intake misbehaves, and with nothing held every one of those requests falls
+  # back to Basic. If the token really does die sooner, the 401 retry
+  # invalidates it and mints another.
+  defp parse_expiry(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, dt, _} -> dt
+      _ -> default_expiry()
+    end
+  end
+
+  defp parse_expiry(_value), do: default_expiry()
+
+  defp default_expiry, do: DateTime.add(DateTime.utc_now(), @default_lifetime_seconds, :second)
 
   # Minting runs inside this GenServer, so anything it raises would kill the
   # process — and enough restarts take the SDK's whole supervision tree, and
