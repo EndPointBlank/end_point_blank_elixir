@@ -52,6 +52,12 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
   defp stub_intake(handlers) do
     test_pid = self()
 
+    # Authorization mints a token before every authorize call, so the token path
+    # has to answer by default — otherwise every test here would quietly
+    # exercise the Basic fallback instead of the Bearer path production uses. A
+    # test that cares overrides it, and an unexpected path still raises.
+    handlers = Map.merge(%{@token_path => minting_token("test-token")}, handlers)
+
     Req.Test.stub(__MODULE__.Stub, fn conn ->
       {:ok, raw, conn} = Plug.Conn.read_body(conn)
 
@@ -145,6 +151,19 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
 
       assert {:ok, %Plug.Conn{}} = EndpointAuthorize.authorize(conn(ctx))
       assert RequestStore.get_source_env_id() == "app-env-42"
+    end
+
+    test "authenticates to intake with a token it minted, not the client credentials", ctx do
+      # The short-lived token is the whole point of the token endpoint. Nothing
+      # mints the first one except this call path, so if the header asked
+      # whether a token already existed instead of asking for one, every request
+      # for the life of the node would carry the long-lived client secret.
+      stub_intake(%{@authorize_path => authorized()})
+
+      EndpointAuthorize.authorize(conn(ctx))
+
+      assert [call] = authorize_calls()
+      assert call.auth == "Bearer test-token"
     end
 
     test "describes the request to intake so it can be matched to an endpoint", ctx do
@@ -468,7 +487,12 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
       # that is simply refusing these credentials.
       AccessTokens.clear()
 
-      stub_intake(%{@authorize_path => responding(401, %{"error" => "nope"})})
+      # Minting has to fail for the call to go out on Basic at all, now that
+      # the header mints rather than checking whether a token already exists.
+      stub_intake(%{
+        @token_path => responding(500, %{"error" => "down"}),
+        @authorize_path => responding(401, %{"error" => "nope"})
+      })
 
       capture_log(fn ->
         assert {:error, 401, _} = EndpointAuthorize.authorize(conn(ctx))
