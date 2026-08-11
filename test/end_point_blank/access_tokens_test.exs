@@ -204,17 +204,40 @@ defmodule EndPointBlank.AccessTokensTest do
       capture_log(fn -> assert AccessTokens.token(hostname) == nil end)
     end
 
-    test "returns nil when the response carries an unreadable expiry", %{hostname: hostname} do
-      # A token with an expiry we cannot read is worse than no token: it would be
-      # cached with no way to know when to refresh it.
+    test "keeps a token for an hour when the response carries an unreadable expiry", %{
+      hostname: hostname
+    } do
+      # An hour is a guess, but a working one, and it is what the other four SDKs
+      # do. Treating the token as unusable instead — as this one did — means a
+      # mint on every inbound request for as long as the intake misbehaves, and
+      # with nothing held every one of those requests falls back to Basic. If the
+      # token really does die sooner, the 401 retry invalidates it and mints
+      # another.
+      test_pid = self()
+
       Req.Test.stub(__MODULE__.Stub, fn conn ->
+        send(test_pid, {:minted, %{}})
+
         conn
         |> Plug.Conn.put_status(201)
         |> Req.Test.json(%{"token" => "t", "expired_at" => "not-a-date"})
       end)
 
-      assert AccessTokens.token(hostname) == nil
-      refute AccessTokens.exists?()
+      assert AccessTokens.token(hostname) == "t"
+      assert AccessTokens.token(hostname) == "t"
+      assert AccessTokens.exists?()
+      # The second call came from the held token, not a second mint — which is
+      # the whole point of defaulting rather than rejecting.
+      assert mint_count() == 1
+    end
+
+    test "does the same when the expiry is missing entirely", %{hostname: hostname} do
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "t"})
+      end)
+
+      assert AccessTokens.token(hostname) == "t"
+      assert AccessTokens.exists?()
     end
 
     test "returns nil when the response has no token at all", %{hostname: hostname} do
