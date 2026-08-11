@@ -15,8 +15,18 @@ defmodule EndPointBlank.AccessTokens do
 
   use GenServer
 
+  require Logger
+
   @refresh_buffer_seconds 120
   @min_ttl_seconds 30
+
+  # Minting happens inside the GenServer, so a caller waits out the HTTP round
+  # trip. `Http.post/3` allows three attempts of up to five seconds each with
+  # 200 ms between them, so a mint against a hung intake can run for about
+  # 15.4 s — three times the 5 s a `GenServer.call/2` allows by default. Left at
+  # the default, a slow intake would time out every caller and take down the
+  # host application's request process while the mint was still in flight.
+  @call_timeout_ms 20_000
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, nil, name: __MODULE__)
@@ -28,14 +38,23 @@ defmodule EndPointBlank.AccessTokens do
   `hostname` is sent with a generation request so intake can resolve the target
   application environment. It does not select which held token comes back —
   every caller shares one.
+
+  Returns `nil` rather than raising if the cache cannot answer in time, so an
+  intake outage costs the caller a fall back to Basic rather than its request.
   """
   def token(hostname) do
-    GenServer.call(__MODULE__, {:token, hostname})
+    call({:token, hostname}, nil)
   end
 
   @doc "Returns true if a token is held and is not about to expire."
   def exists? do
-    GenServer.call(__MODULE__, :exists)
+    call(:exists, false)
+  end
+
+  defp call(message, on_failure) do
+    GenServer.call(__MODULE__, message, @call_timeout_ms)
+  catch
+    :exit, _reason -> on_failure
   end
 
   @doc """
@@ -104,7 +123,7 @@ defmodule EndPointBlank.AccessTokens do
   end
 
   defp generate_and_store(hostname, state) do
-    case EndPointBlank.Commands.GenerateAccessToken.generate(hostname) do
+    case safe_generate(hostname) do
       %{"token" => token, "expired_at" => expires_at_str} ->
         case DateTime.from_iso8601(expires_at_str) do
           {:ok, dt, _} -> {token, {token, dt}}
@@ -114,6 +133,25 @@ defmodule EndPointBlank.AccessTokens do
       _ ->
         {nil, state}
     end
+  end
+
+  # Minting runs inside this GenServer, so anything it raises would kill the
+  # process — and enough restarts take the SDK's whole supervision tree, and
+  # with it the host application's, down with it. `GenerateAccessToken` already
+  # turns a refusal or a transport error into `nil`; this is for what it cannot
+  # anticipate, such as a malformed access-token URL built from bad config.
+  # An SDK must not be able to crash the application it is embedded in because
+  # intake is misconfigured.
+  defp safe_generate(hostname) do
+    EndPointBlank.Commands.GenerateAccessToken.generate(hostname)
+  rescue
+    error ->
+      Logger.error("[EndPointBlank] Minting an access token raised: #{Exception.message(error)}")
+      nil
+  catch
+    kind, reason ->
+      Logger.error("[EndPointBlank] Minting an access token #{kind}: #{inspect(reason)}")
+      nil
   end
 
   defp not_near_expiry?(expires_at) do
