@@ -1,36 +1,75 @@
 defmodule EndPointBlank.AccessTokens do
   @moduledoc """
-  Thread-safe in-memory cache for access tokens keyed by target hostname.
+  In-memory holder for this node's access token.
+
+  Intake issues a token against the application environment the authenticating
+  credential belongs to. The hostname sent with a generation request only
+  resolves the target server-side; it is not what the token is scoped to. A node
+  authenticates as exactly one application environment, so it holds exactly one
+  token, whatever hostnames its callers address it by.
 
   Tokens are proactively refreshed when they are within two minutes of expiry
-  to avoid serving stale tokens under concurrent load.
+  to avoid serving one that dies in flight — an expired token can never be
+  revived, only replaced.
   """
 
   use GenServer
 
+  require Logger
+
   @refresh_buffer_seconds 120
   @min_ttl_seconds 30
 
+  # Minting happens inside the GenServer, so a caller waits out the HTTP round
+  # trip. `Http.post/3` allows three attempts of up to five seconds each with
+  # 200 ms between them, so a mint against a hung intake can run for about
+  # 15.4 s — three times the 5 s a `GenServer.call/2` allows by default. Left at
+  # the default, a slow intake would time out every caller and take down the
+  # host application's request process while the mint was still in flight.
+  @call_timeout_ms 20_000
+
   def start_link(_opts) do
-    GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+    GenServer.start_link(__MODULE__, nil, name: __MODULE__)
   end
 
-  @doc "Returns the cached token for `hostname`, generating a new one if needed."
+  @doc """
+  Returns the held token, minting one if none is held or it is near expiry.
+
+  `hostname` is sent with a generation request so intake can resolve the target
+  application environment. It does not select which held token comes back —
+  every caller shares one.
+
+  Returns `nil` rather than raising if the cache cannot answer in time, so an
+  intake outage costs the caller a fall back to Basic rather than its request.
+  """
   def token(hostname) do
-    GenServer.call(__MODULE__, {:token, hostname})
+    call({:token, hostname}, nil)
   end
 
-  @doc "Returns true if a non-expiring token is cached for `hostname`."
-  def exists?(hostname) do
-    GenServer.call(__MODULE__, {:exists, hostname})
+  @doc "Returns true if a token is held and is not about to expire."
+  def exists? do
+    call(:exists, false)
   end
 
-  @doc "Removes the cached token for `hostname`."
-  def remove(hostname) do
-    GenServer.cast(__MODULE__, {:remove, hostname})
+  defp call(message, on_failure) do
+    GenServer.call(__MODULE__, message, @call_timeout_ms)
+  catch
+    :exit, _reason -> on_failure
   end
 
-  @doc "Clears all cached tokens."
+  @doc """
+  Discards the held token, but only if it is still the one the caller had.
+
+  Every request in flight when a token is rejected reports the same stale
+  value. Only the first of them should cause a mint — the rest are holding a
+  token that has already been replaced, and clearing on their behalf would
+  discard a good token and stampede intake.
+  """
+  def invalidate(stale_token) do
+    GenServer.cast(__MODULE__, {:invalidate, stale_token})
+  end
+
+  @doc "Discards the held token."
   def clear do
     GenServer.cast(__MODULE__, :clear)
   end
@@ -38,7 +77,7 @@ defmodule EndPointBlank.AccessTokens do
   # Callbacks
 
   @impl true
-  def init(_), do: {:ok, %{}}
+  def init(_), do: {:ok, nil}
 
   @impl true
   def handle_call({:token, hostname}, _from, state) do
@@ -47,9 +86,9 @@ defmodule EndPointBlank.AccessTokens do
   end
 
   @impl true
-  def handle_call({:exists, hostname}, _from, state) do
+  def handle_call(:exists, _from, state) do
     exists =
-      case Map.get(state, hostname) do
+      case state do
         {_token, expires_at} -> usable?(expires_at)
         nil -> false
       end
@@ -58,16 +97,22 @@ defmodule EndPointBlank.AccessTokens do
   end
 
   @impl true
-  def handle_cast({:remove, hostname}, state), do: {:noreply, Map.delete(state, hostname)}
+  def handle_cast({:invalidate, stale_token}, state) when is_binary(stale_token) do
+    case state do
+      {^stale_token, _expires_at} -> {:noreply, nil}
+      _ -> {:noreply, state}
+    end
+  end
 
-  @impl true
-  def handle_cast(:clear, _state), do: {:noreply, %{}}
+  def handle_cast({:invalidate, _stale_token}, state), do: {:noreply, state}
+
+  def handle_cast(:clear, _state), do: {:noreply, nil}
 
   # Helpers
 
   defp fetch_or_generate(hostname, state) do
-    case Map.get(state, hostname) do
-      {token, expires_at} when not is_nil(token) ->
+    case state do
+      {token, expires_at} when is_binary(token) ->
         if not_near_expiry?(expires_at),
           do: {token, state},
           else: generate_and_store(hostname, state)
@@ -78,16 +123,35 @@ defmodule EndPointBlank.AccessTokens do
   end
 
   defp generate_and_store(hostname, state) do
-    case EndPointBlank.Commands.GenerateAccessToken.generate(hostname) do
+    case safe_generate(hostname) do
       %{"token" => token, "expired_at" => expires_at_str} ->
         case DateTime.from_iso8601(expires_at_str) do
-          {:ok, dt, _} -> {token, Map.put(state, hostname, {token, dt})}
+          {:ok, dt, _} -> {token, {token, dt}}
           _ -> {nil, state}
         end
 
       _ ->
         {nil, state}
     end
+  end
+
+  # Minting runs inside this GenServer, so anything it raises would kill the
+  # process — and enough restarts take the SDK's whole supervision tree, and
+  # with it the host application's, down with it. `GenerateAccessToken` already
+  # turns a refusal or a transport error into `nil`; this is for what it cannot
+  # anticipate, such as a malformed access-token URL built from bad config.
+  # An SDK must not be able to crash the application it is embedded in because
+  # intake is misconfigured.
+  defp safe_generate(hostname) do
+    EndPointBlank.Commands.GenerateAccessToken.generate(hostname)
+  rescue
+    error ->
+      Logger.error("[EndPointBlank] Minting an access token raised: #{Exception.message(error)}")
+      nil
+  catch
+    kind, reason ->
+      Logger.error("[EndPointBlank] Minting an access token #{kind}: #{inspect(reason)}")
+      nil
   end
 
   defp not_near_expiry?(expires_at) do
