@@ -143,6 +143,16 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
   # landed before the next lookup, so cache assertions are not a race.
   defp sync_cache, do: :sys.get_state(AuthCache)
 
+  # Plug.Conn.put_req_header/3 refuses "host" outright (raise: "set the host
+  # header with %Plug.Conn{conn | host: ...}"). Mirrors base_url_test.exs's
+  # helper of the same name: BaseUrl reads the raw header on purpose, and a
+  # real request from behind a proxy does carry a "host" request header
+  # distinct from conn.host. List.keystore/4 mirrors what put_req_header does
+  # internally, minus the guard.
+  defp put_raw_header(conn, name, value) do
+    %{conn | req_headers: List.keystore(conn.req_headers, name, 0, {name, value})}
+  end
+
   # ── Tests ───────────────────────────────────────────────────────────────────
 
   describe "a successful authorization" do
@@ -533,6 +543,59 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
       capture_log(fn -> EndpointAuthorize.authorize(conn(ctx)) end)
 
       assert RequestStore.get_source_env_id() == nil
+    end
+  end
+
+  describe "the hostname it reports and keys its token cache on" do
+    test "lowercases it", ctx do
+      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+
+      EndpointAuthorize.authorize(conn(ctx, hostname: "API.Example.TEST"))
+
+      assert List.first(authorize_calls()).body["target_hostname"] == "api.example.test"
+    end
+
+    # Cowboy, Bandit and Plug.Test.conn/2 all strip the brackets off an IPv6
+    # literal before setting conn.host, so this is what a real IPv6 request
+    # looks like by the time it reaches this conn -- the conn(ctx, hostname:
+    # ...) helper sets :host as a struct field and writes no header, exactly
+    # like a real adapter.
+    test "re-brackets an IPv6 host that arrived on conn.host without brackets", ctx do
+      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+
+      EndpointAuthorize.authorize(conn(ctx, hostname: "2001:db8::1"))
+
+      assert List.first(authorize_calls()).body["target_hostname"] == "[2001:db8::1]"
+    end
+
+    test "reports no hostname and authenticates with Basic when the host is unusable", ctx do
+      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+
+      EndpointAuthorize.authorize(conn(ctx, hostname: "api.example.test/../evil"))
+
+      call = List.first(authorize_calls())
+      assert call.body["target_hostname"] == nil
+      assert call.auth == "Basic " <> Base.encode64("cid:csecret")
+      assert Enum.filter(intake_calls(), &(&1.path == @token_path)) == []
+    end
+
+    # This is the case the whole design decision is pinned on: forwarded
+    # headers are read on the reporting path (BaseUrl.resolve/2, see
+    # base_url_test.exs) but deliberately never on this one. A rewire to
+    # resolve/2 here would pass every other test in this file -- most conns
+    # never carry X-Forwarded-Host at all -- while silently reintroducing
+    # forwarded-header sensitivity to target_hostname and the token cache key.
+    test "reports the raw Host header, not X-Forwarded-Host, as the target hostname", ctx do
+      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+
+      request =
+        conn(ctx)
+        |> put_raw_header("host", "internal.svc")
+        |> put_raw_header("x-forwarded-host", "api.example.test")
+
+      EndpointAuthorize.authorize(request)
+
+      assert List.first(authorize_calls()).body["target_hostname"] == "internal.svc"
     end
   end
 end

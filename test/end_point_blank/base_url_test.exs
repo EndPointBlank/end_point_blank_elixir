@@ -210,4 +210,56 @@ defmodule EndPointBlank.BaseUrlTest do
     assert BaseUrl.resolve(conn([], [{"host", at_limit}]))[:host] == at_limit
     refute BaseUrl.resolve(conn([], [{"host", over_limit}])) |> Map.has_key?(:host)
   end
+
+  test "hostname lowercases the host and strips the port" do
+    assert BaseUrl.hostname(conn([], [{"host", "API.Example.com:8443"}])) == "api.example.com"
+  end
+
+  test "hostname keeps an IPv6 literal whole and bracketed" do
+    resolved = BaseUrl.hostname(conn([], [{"host", "[2001:DB8::1]:8443"}]))
+
+    assert resolved == "[2001:db8::1]"
+  end
+
+  test "hostname ignores X-Forwarded-Host even though resolve honors it" do
+    # target_hostname is the portal's application-environment lookup key. A
+    # value matching no registered row is a hard 422, not a cache miss.
+    proxied =
+      conn([], [
+        {"host", "internal.svc"},
+        {"x-forwarded-host", "api.example.com"}
+      ])
+
+    assert BaseUrl.hostname(proxied) == "internal.svc"
+    assert BaseUrl.resolve(proxied)[:host] == "api.example.com"
+  end
+
+  test "hostname falls back to conn.host when there is no host header" do
+    assert BaseUrl.hostname(conn(host: "internal.svc")) == "internal.svc"
+  end
+
+  test "hostname is nil for a host that is not shaped like a hostname" do
+    resolved = BaseUrl.hostname(conn([], [{"host", "api.example.com/../evil?x=1"}]))
+
+    assert resolved == nil
+  end
+
+  test "hostname is nil for a host longer than DNS allows" do
+    long_host = String.duplicate("a", 300)
+
+    assert BaseUrl.hostname(conn([], [{"host", long_host}])) == nil
+  end
+
+  test "hostname is nil when handed something that is not a conn" do
+    assert BaseUrl.hostname(:not_a_conn) == nil
+  end
+
+  # Cowboy, Bandit and Plug.Test.conn/2 all strip the brackets off an IPv6
+  # literal before setting conn.host, so a real IPv6 request arrives as the
+  # bare "2001:db8::1" -- not "[2001:db8::1]". Without re-bracketing here,
+  # this SDK would report nil for exactly the requests the other four SDKs
+  # report a bracketed literal for.
+  test "hostname re-brackets an IPv6 literal that arrived on conn.host without brackets" do
+    assert BaseUrl.hostname(conn(host: "2001:db8::1")) == "[2001:db8::1]"
+  end
 end
