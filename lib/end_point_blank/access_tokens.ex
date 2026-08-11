@@ -122,16 +122,22 @@ defmodule EndPointBlank.AccessTokens do
     end
   end
 
-  defp generate_and_store(hostname, state) do
+  # A failed mint discards whatever was held rather than leaving it behind. Only
+  # a token already inside the refresh buffer reaches a mint, so what would be
+  # kept is close to death — and exists?/0, whose floor is 30 seconds, would go
+  # on calling it usable right up to the 401 it is about to earn. An unreadable
+  # expiry is the same case: a token with no usable lifetime is worse than none,
+  # because nothing could tell when to replace it.
+  defp generate_and_store(hostname, _state) do
     case safe_generate(hostname) do
       %{"token" => token, "expired_at" => expires_at_str} ->
         case DateTime.from_iso8601(expires_at_str) do
           {:ok, dt, _} -> {token, {token, dt}}
-          _ -> {nil, state}
+          _ -> {nil, nil}
         end
 
       _ ->
-        {nil, state}
+        {nil, nil}
     end
   end
 
