@@ -249,5 +249,22 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.token("bogus-" <> hostname) == "token-1"
       assert AccessTokens.exists?()
     end
+
+    test "discards the token it could not replace when a mint fails", %{hostname: hostname} do
+      # Only a token already inside the refresh buffer reaches a mint, so the one
+      # left behind is always close to death. Keeping it means exists?/0 — whose
+      # floor is 30 seconds — goes on calling it usable, and a caller acting on
+      # that presents a credential the intake is about to reject.
+      stub_minting(ttl_seconds: 60)
+      assert AccessTokens.token(hostname) == "token-1"
+
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(422) |> Req.Test.json(%{"error" => "revoked"})
+      end)
+
+      capture_log(fn -> assert AccessTokens.token(hostname) == nil end)
+
+      refute AccessTokens.exists?()
+    end
   end
 end
