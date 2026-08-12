@@ -211,6 +211,16 @@ defmodule EndPointBlank.BaseUrlTest do
     refute BaseUrl.resolve(conn([], [{"host", over_limit}])) |> Map.has_key?(:host)
   end
 
+  test "an empty host header falls through to conn.host" do
+    # The cross-SDK contract: an empty Host header is absent, not
+    # present-but-unusable, in all five clients. This is a deliberate change
+    # from Elixir's previous behavior -- "" is truthy here, so it used to stop
+    # the fallback and resolve the host to nil.
+    resolved = BaseUrl.resolve(conn([host: "internal.svc"], [{"host", ""}]))
+
+    assert resolved == %{scheme: "https", host: "internal.svc", port: 8443}
+  end
+
   test "hostname lowercases the host and strips the port" do
     assert BaseUrl.hostname(conn([], [{"host", "API.Example.com:8443"}])) == "api.example.com"
   end
@@ -236,6 +246,14 @@ defmodule EndPointBlank.BaseUrlTest do
 
   test "hostname falls back to conn.host when there is no host header" do
     assert BaseUrl.hostname(conn(host: "internal.svc")) == "internal.svc"
+  end
+
+  test "hostname falls through to conn.host when the host header is empty" do
+    assert BaseUrl.hostname(conn([host: "internal.svc"], [{"host", ""}])) == "internal.svc"
+  end
+
+  test "hostname is nil when the host header is empty and conn.host is unusable" do
+    assert BaseUrl.hostname(conn([host: nil], [{"host", ""}])) == nil
   end
 
   test "hostname is nil for a host that is not shaped like a hostname" do

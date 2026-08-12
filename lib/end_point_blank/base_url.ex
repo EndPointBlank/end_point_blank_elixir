@@ -62,7 +62,7 @@ defmodule EndPointBlank.BaseUrl do
     proxied = not is_nil(forwarded_scheme) or not is_nil(forwarded_port)
 
     {host_part, authority_port} =
-      forwarded_authority || split_authority(header(conn, "host") || conn.host)
+      forwarded_authority || split_authority(host_header(conn) || conn.host)
 
     scheme = forwarded_scheme || if(proxied, do: nil, else: clean_scheme(conn.scheme))
     host = clean_host(host_part)
@@ -97,7 +97,7 @@ defmodule EndPointBlank.BaseUrl do
   @spec hostname(Plug.Conn.t() | any()) :: String.t() | nil
   def hostname(%Plug.Conn{} = conn) do
     {host_part, _authority_port} =
-      split_authority(header(conn, "host") || bracket_ipv6(conn.host))
+      split_authority(host_header(conn) || bracket_ipv6(conn.host))
 
     clean_host(host_part)
   end
@@ -123,6 +123,30 @@ defmodule EndPointBlank.BaseUrl do
     case Plug.Conn.get_req_header(conn, name) do
       [] -> nil
       values -> Enum.join(values, ",")
+    end
+  end
+
+  # The single site where both resolve/2 and hostname/1 decide what an empty
+  # `Host:` means. It means absent, not present-but-unusable: a caller that
+  # sent the header with nothing after it has said nothing about which host it
+  # meant, so there is nothing here to prefer over conn.host. Falling through
+  # concedes no control either -- conn.host is a server-side value the caller
+  # cannot steer, so it hands the caller nothing it did not already have.
+  #
+  # On the authorize path the alternative is worse than cosmetic: resolving to
+  # nil there drops the request to Basic auth and skips the token mint,
+  # whereas falling through yields a usable application-environment lookup key.
+  #
+  # This CHANGES this SDK's behavior -- an empty Host header used to resolve
+  # the host to nil, because "" is truthy in Elixir and so stopped the `||`
+  # chain here. Python, Java and JS already fell through, "" being falsy
+  # there; Ruby stopped for the same reason Elixir did. One expression written
+  # five times, agreeing everywhere except the empty case. It now lives at one
+  # site per SDK, and this comment is why.
+  defp host_header(conn) do
+    case header(conn, "host") do
+      "" -> nil
+      other -> other
     end
   end
 
