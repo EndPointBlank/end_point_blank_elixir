@@ -8,7 +8,6 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
   require Logger
 
   alias EndPointBlank.{
-    AccessTokens,
     AuthCache,
     BaseUrl,
     Config,
@@ -58,8 +57,6 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
         {:ok, conn}
 
       :miss ->
-        auth = Authorization.header(target_hostname)
-
         body = %{
           path: path,
           http_method: conn.method,
@@ -71,32 +68,12 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
           uuid: RequestStore.get_uuid()
         }
 
-        result = Http.post(Config.authorize_url(), body, auth)
-
-        result =
-          case result do
-            {:ok, %Req.Response{status: 401}} ->
-              if String.starts_with?(auth, "Bearer ") do
-                # Hand back the token that was rejected rather than clearing
-                # whatever is held now: under load it may already have been
-                # replaced by another request that got here first, and dropping
-                # that one would send the whole wave to mint again.
-                AccessTokens.invalidate(String.replace_prefix(auth, "Bearer ", ""))
-
-                retry_auth =
-                  case AccessTokens.token(target_hostname) do
-                    nil -> Authorization.basic_header()
-                    fresh -> "Bearer #{fresh}"
-                  end
-
-                Http.post(Config.authorize_url(), body, retry_auth)
-              else
-                result
-              end
-
-            _ ->
-              result
-          end
+        # Basic, not Bearer. This call is to intake, which already holds this
+        # service's credential -- minting a token to present it back was a hop
+        # that bought nothing. With no Bearer there is no stale token, so the
+        # 401 retry that used to live here is gone: a 401 now means the
+        # credential is wrong, which is worth surfacing rather than retrying.
+        result = Http.post(Config.authorize_url(), body, Authorization.basic_header())
 
         case result do
           {:ok, %Req.Response{status: 201, body: resp_body}} ->

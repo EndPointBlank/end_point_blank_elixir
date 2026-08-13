@@ -3,8 +3,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
   The authorize command decides whether a request is allowed to proceed, so a
   regression here is either an outage (legitimate traffic refused) or a hole
   (traffic allowed that should not be). It also owns the cache that most
-  requests are answered from, and the credential downgrade that keeps the
-  service usable when a token expires mid-flight.
+  requests are answered from, and the credential it presents to intake itself.
   """
   use ExUnit.Case, async: false
 
@@ -17,8 +16,6 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
   @token_path "/api/access_token"
 
   setup do
-    # Token minting happens inside the AccessTokens GenServer, not the test
-    # process, so the stub has to be visible process-wide.
     Req.Test.set_req_test_to_shared()
 
     Application.put_env(:end_point_blank_elixir, :req_test_plug, {Req.Test, __MODULE__.Stub})
@@ -29,6 +26,13 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
       client_secret: "csecret",
       base_url: "https://intake.test"
     )
+
+    # The token cache is cleared too. "never requests an access token" is the
+    # pin for this whole change, and a warm cache would let a regression that
+    # reintroduced Authorization.header(target_hostname) slip through -- it
+    # would serve the held token instead of minting one. Cold only by suite
+    # ordering is not cold.
+    AccessTokens.clear()
 
     on_exit(fn ->
       Config.reset()
@@ -48,15 +52,12 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
 
   # Installs the intake stub. `handlers` maps a request path to a responder
   # taking `(conn, call)`, where `call` is the already-decoded request; every
-  # call is also recorded for later inspection.
+  # call is also recorded for later inspection. Unlike before this change,
+  # there is no default handler for @token_path: authorize/3 never calls it
+  # any more, so a test that unexpectedly hit it would raise a KeyError
+  # rather than silently minting a Bearer token.
   defp stub_intake(handlers) do
     test_pid = self()
-
-    # Authorization mints a token before every authorize call, so the token path
-    # has to answer by default — otherwise every test here would quietly
-    # exercise the Basic fallback instead of the Bearer path production uses. A
-    # test that cares overrides it, and an unexpected path still raises.
-    handlers = Map.merge(%{@token_path => minting_token("test-token")}, handlers)
 
     Req.Test.stub(__MODULE__.Stub, fn conn ->
       {:ok, raw, conn} = Plug.Conn.read_body(conn)
@@ -89,26 +90,6 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
 
   defp unreachable do
     fn conn, _call -> Req.Test.transport_error(conn, :econnrefused) end
-  end
-
-  defp minting_token(token, opts \\ []) do
-    expires_at =
-      DateTime.utc_now()
-      |> DateTime.add(Keyword.get(opts, :ttl_seconds, 3600), :second)
-      |> DateTime.to_iso8601()
-
-    responding(201, %{"token" => token, "expired_at" => expires_at})
-  end
-
-  # Refuses the stale Bearer once and grants whatever credential is retried.
-  defp rejecting_stale_bearer do
-    fn conn, call ->
-      if call.auth == "Bearer stale-token" do
-        responding(401, %{"error" => "expired"}).(conn, call)
-      else
-        authorized().(conn, call)
-      end
-    end
   end
 
   # Every intake call made so far, oldest first. The command's HTTP calls are
@@ -163,17 +144,30 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
       assert RequestStore.get_source_env_id() == "app-env-42"
     end
 
-    test "authenticates to intake with a token it minted, not the client credentials", ctx do
-      # The short-lived token is the whole point of the token endpoint. Nothing
-      # mints the first one except this call path, so if the header asked
-      # whether a token already existed instead of asking for one, every request
-      # for the life of the node would carry the long-lived client secret.
+    test "authenticates to intake with the configured Basic credentials, not a minted token",
+         ctx do
+      # This call is to intake, which already holds this service's credential
+      # -- minting a token to present it back would be a hop that buys nothing.
       stub_intake(%{@authorize_path => authorized()})
 
       EndpointAuthorize.authorize(conn(ctx))
 
       assert [call] = authorize_calls()
-      assert call.auth == "Bearer test-token"
+      assert call.auth == "Basic " <> Base.encode64("cid:csecret")
+    end
+
+    test "never requests an access token, since intake already holds this service's credential",
+         ctx do
+      # The assertion that pins the change. A token here would be a wasted
+      # round trip on every cache miss, on every inbound request. Because
+      # stub_intake/1 installs no handler for @token_path, a regression that
+      # reintroduced the mint would raise inside the stub rather than pass
+      # quietly.
+      stub_intake(%{@authorize_path => authorized()})
+
+      EndpointAuthorize.authorize(conn(ctx))
+
+      assert Enum.filter(intake_calls(), &(&1.path == @token_path)) == []
     end
 
     test "describes the request to intake so it can be matched to an endpoint", ctx do
@@ -448,71 +442,6 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
     end
   end
 
-  describe "an expired access token" do
-    setup ctx do
-      stub_intake(%{@token_path => minting_token("stale-token")})
-      assert AccessTokens.token(ctx.hostname) == "stale-token"
-      _minted = intake_calls()
-      :ok
-    end
-
-    test "is discarded and the call retried with a freshly minted one", ctx do
-      stub_intake(%{
-        @token_path => minting_token("fresh-token"),
-        @authorize_path => rejecting_stale_bearer()
-      })
-
-      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
-
-      assert [first, second] = authorize_calls()
-      assert first.auth == "Bearer stale-token"
-      assert second.auth == "Bearer fresh-token"
-    end
-
-    test "falls back to Basic credentials when no fresh token can be minted", ctx do
-      stub_intake(%{
-        @token_path => responding(500, %{"error" => "down"}),
-        @authorize_path => rejecting_stale_bearer()
-      })
-
-      capture_log(fn -> assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx)) end)
-
-      assert [_first, second] = authorize_calls()
-      assert second.auth == "Basic " <> Base.encode64("cid:csecret")
-    end
-
-    test "is removed from the cache so later requests do not resend it", ctx do
-      stub_intake(%{
-        @token_path => responding(500, %{"error" => "down"}),
-        @authorize_path => rejecting_stale_bearer()
-      })
-
-      capture_log(fn -> EndpointAuthorize.authorize(conn(ctx)) end)
-
-      refute AccessTokens.exists?()
-    end
-
-    test "is not retried when the rejected call already used Basic credentials", ctx do
-      # Retrying Basic with Basic would double every request against an intake
-      # that is simply refusing these credentials.
-      AccessTokens.clear()
-
-      # Minting has to fail for the call to go out on Basic at all, now that
-      # the header mints rather than checking whether a token already exists.
-      stub_intake(%{
-        @token_path => responding(500, %{"error" => "down"}),
-        @authorize_path => responding(401, %{"error" => "nope"})
-      })
-
-      capture_log(fn ->
-        assert {:error, 401, _} = EndpointAuthorize.authorize(conn(ctx))
-      end)
-
-      assert [only] = authorize_calls()
-      assert String.starts_with?(only.auth, "Basic ")
-    end
-  end
-
   describe "when intake refuses or is unavailable" do
     test "returns the status and body intake gave, so the caller can relay it", ctx do
       stub_intake(%{@authorize_path => responding(403, %{"error" => "no access"})})
@@ -546,9 +475,12 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
     end
   end
 
-  describe "the hostname it reports and keys its token cache on" do
+  describe "the target hostname it reports to intake" do
+    # target_hostname is a distinct field from the access-token cache key: it
+    # is derived from the raw Host header for intake to match the request
+    # against, and is unaffected by this change.
     test "lowercases it", ctx do
-      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+      stub_intake(%{@authorize_path => authorized()})
 
       EndpointAuthorize.authorize(conn(ctx, hostname: "API.Example.TEST"))
 
@@ -561,22 +493,22 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
     # ...) helper sets :host as a struct field and writes no header, exactly
     # like a real adapter.
     test "re-brackets an IPv6 host that arrived on conn.host without brackets", ctx do
-      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+      stub_intake(%{@authorize_path => authorized()})
 
       EndpointAuthorize.authorize(conn(ctx, hostname: "2001:db8::1"))
 
       assert List.first(authorize_calls()).body["target_hostname"] == "[2001:db8::1]"
     end
 
-    test "reports no hostname and authenticates with Basic when the host is unusable", ctx do
-      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+    test "reports no hostname, and still authenticates with Basic, when the host is unusable",
+         ctx do
+      stub_intake(%{@authorize_path => authorized()})
 
       EndpointAuthorize.authorize(conn(ctx, hostname: "api.example.test/../evil"))
 
       call = List.first(authorize_calls())
       assert call.body["target_hostname"] == nil
       assert call.auth == "Basic " <> Base.encode64("cid:csecret")
-      assert Enum.filter(intake_calls(), &(&1.path == @token_path)) == []
     end
 
     # This is the case the whole design decision is pinned on: forwarded
@@ -584,9 +516,9 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
     # base_url_test.exs) but deliberately never on this one. A rewire to
     # resolve/2 here would pass every other test in this file -- most conns
     # never carry X-Forwarded-Host at all -- while silently reintroducing
-    # forwarded-header sensitivity to target_hostname and the token cache key.
+    # forwarded-header sensitivity to target_hostname.
     test "reports the raw Host header, not X-Forwarded-Host, as the target hostname", ctx do
-      stub_intake(%{@authorize_path => authorized(), @token_path => minting_token("t")})
+      stub_intake(%{@authorize_path => authorized()})
 
       request =
         conn(ctx)
