@@ -189,7 +189,15 @@ defmodule EndPointBlank.AccessTokens do
   end
 
   defp failure_reason(nil), do: "no response"
-  defp failure_reason(%{"error" => error}), do: error
+  defp failure_reason(%{"error" => error}) when is_binary(error), do: error
+
+  # intake is expected to send "error" as a string. A misbehaving intake
+  # sending anything else (a nested object, a number) must not crash this
+  # GenServer either -- inspect/1, not the plain string interpolation this
+  # value flows into at the call site, for the same reason base_url got the
+  # same treatment above: "An SDK must not be able to crash the application
+  # it is embedded in because intake is misconfigured."
+  defp failure_reason(%{"error" => error}), do: inspect(error)
 
   defp failure_reason(%{"token" => token}) when is_binary(token) and token != "" do
     # Distinct from a rejected request: intake's base_url is NOT NULL, and it

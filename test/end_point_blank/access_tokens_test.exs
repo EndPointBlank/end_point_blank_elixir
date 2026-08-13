@@ -620,6 +620,31 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.token(base) == "token-1"
     end
 
+    test "a non-string \"error\" field from intake does not crash the GenServer when the cache is warm",
+         %{base_url: base} do
+      # The identical exposure, one trust boundary over: not what the caller
+      # passed in, but what intake sent back. failure_reason/1's
+      # `%{"error" => error}` clause returned that value verbatim, and it
+      # flows into the exact same `#{...}` log line the base_url fix above
+      # covers. A 2xx response is required to reach it at all -- a non-2xx
+      # status never even surfaces its body past GenerateAccessToken.generate/1.
+      other = "https://other-" <> String.trim_leading(base, "https://")
+
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      pid = Process.whereis(AccessTokens)
+
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"error" => %{"code" => "revoked"}})
+      end)
+
+      capture_log(fn -> assert AccessTokens.token(other) == nil end)
+
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
+      assert AccessTokens.token(base) == "token-1"
+    end
+
     test "exists?/1 with nil does not crash the GenServer when the cache is warm",
          %{base_url: base} do
       # exists?/1 reaches the same matcher through a different handle_call
