@@ -4,9 +4,20 @@ defmodule EndPointBlank.Commands.GenerateAccessToken do
   require Logger
   alias EndPointBlank.{Config, Authorization, Http}
 
-  def generate(hostname) do
+  @doc """
+  Requests a new access token for `base_url`.
+
+  `base_url` is sent verbatim, unconditionally alongside `token_ttl` (which
+  goes over the wire as an explicit `null` when unconfigured — intake handles
+  that deliberately). intake normalizes `base_url` and matches it against
+  registered base URLs by longest path prefix.
+
+  Returns the parsed response map (`token`, `expired_at`, `base_url`) on
+  success, or `nil` on failure.
+  """
+  def generate(base_url) do
     config = Config.get()
-    body = %{hostname: hostname, token_ttl: config.token_ttl}
+    body = %{base_url: base_url, token_ttl: config.token_ttl}
     auth = Authorization.basic_header()
 
     case Http.post(Config.access_token_url(), body, auth) do

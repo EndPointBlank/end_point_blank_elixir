@@ -41,28 +41,42 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
       |> Req.Test.json(%{"token" => "abc", "expired_at" => "2030-01-01T00:00:00Z"})
     end)
 
-    assert GenerateAccessToken.generate("api.example.com") == %{
+    assert GenerateAccessToken.generate("https://api.example.com/orders") == %{
              "token" => "abc",
              "expired_at" => "2030-01-01T00:00:00Z"
            }
   end
 
-  test "asks the access-token endpoint for the given hostname and configured TTL" do
+  test "asks the access-token endpoint for the given base_url and configured TTL" do
     Config.update(token_ttl: 1_800)
     stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
 
-    GenerateAccessToken.generate("api.example.com")
+    GenerateAccessToken.generate("https://api.example.com/orders")
 
     assert_receive {:token_request, path, body, _auth}
     assert path == "/api/access_token"
-    assert body == %{"hostname" => "api.example.com", "token_ttl" => 1_800}
+    assert body == %{"base_url" => "https://api.example.com/orders", "token_ttl" => 1_800}
+  end
+
+  test "sends the base_url verbatim, with no normalization" do
+    # Intake owns normalization and matches by longest path prefix. The SDK
+    # altering the argument -- downcasing, trimming a trailing slash, or
+    # reducing it to a hostname -- would change which environment the caller
+    # asked for.
+    messy = "https://API.Example.com:8443/Orders/"
+    stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
+
+    GenerateAccessToken.generate(messy)
+
+    assert_receive {:token_request, _path, body, _auth}
+    assert body["base_url"] == messy
   end
 
   test "authenticates with Basic credentials" do
     # A token request cannot present a token, so this must never try to.
     stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
 
-    GenerateAccessToken.generate("api.example.com")
+    GenerateAccessToken.generate("https://api.example.com/orders")
 
     assert_receive {:token_request, _path, _body, auth}
     assert auth == "Basic " <> Base.encode64("cid:csecret")
@@ -71,7 +85,10 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
   test "returns nil and logs when intake refuses" do
     stub(fn conn -> conn |> Plug.Conn.put_status(403) |> Req.Test.json(%{"error" => "nope"}) end)
 
-    log = capture_log(fn -> assert GenerateAccessToken.generate("api.example.com") == nil end)
+    log =
+      capture_log(fn ->
+        assert GenerateAccessToken.generate("https://api.example.com/orders") == nil
+      end)
 
     assert log =~ "GenerateAccessToken failed"
     assert log =~ "403"
@@ -80,7 +97,10 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
   test "returns nil and logs when intake cannot be reached" do
     stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
 
-    log = capture_log(fn -> assert GenerateAccessToken.generate("api.example.com") == nil end)
+    log =
+      capture_log(fn ->
+        assert GenerateAccessToken.generate("https://api.example.com/orders") == nil
+      end)
 
     assert log =~ "GenerateAccessToken error"
   end

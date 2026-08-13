@@ -202,14 +202,14 @@ Under the hood it:
 - Resolves the route pattern via `EndPointBlank.Phoenix.RoutePatternFinder`
   (falls back to `conn.request_path` if no Phoenix router is present) and the
   API version via `EndPointBlank.VersionFinder`.
-- Sends `Authorization: Bearer <token>` when a cached access token exists for
-  the target host (`EndPointBlank.AccessTokens`), otherwise `Basic
-  <client_id:client_secret>` (`EndPointBlank.Authorization`).
+- Authenticates to intake with `Authorization: Basic <client_id:client_secret>`
+  (`EndPointBlank.Authorization.basic_header/0`). This call never presents a
+  Bearer token — intake already holds this service's credential, so minting
+  one to present it back would be a hop that buys nothing, and with no Bearer
+  there is nothing that can go stale for a `401` to retry.
 - Caches successful authorizations for up to `:cache_ttl` seconds
   (`EndPointBlank.AuthCache`), keyed on the caller's own auth header, path,
   HTTP method, and `app_name` — repeat calls skip the network round trip.
-- On a `401` from a Bearer-authenticated call, evicts the stale token and
-  retries once with a fresh token (or Basic auth as a last resort).
 - Stores the resulting `source_application_environment_id` in
   `EndPointBlank.RequestStore` for the rest of the request lifecycle (it's
   attached to request/response/log/error payloads).
@@ -218,6 +218,29 @@ Under the hood it:
 authorization failures. `EndPointBlank.Plug.ReportInteraction` (below)
 specifically re-raises it *without* sending it to the error-reporting
 endpoint, since the authorization flow already reports the denial itself.
+
+### Calling another EndPointBlank-protected service
+
+`EndPointBlank.Authorization.header/1` is also a public building block for
+your own outbound calls to *other* services protected by EndPointBlank — not
+just the intake calls above. Pass the URL you are about to call, **not a
+hostname**, with any query string or fragment stripped first — intake
+normalizes the base URL and matches it against registered base URLs by
+longest path prefix, so you do not need to know how the target registered
+itself:
+
+```elixir
+EndPointBlank.Authorization.header("https://api.example.com/orders")
+# "Bearer <token>" (minting one via EndPointBlank.AccessTokens if none is
+# held yet) or "Basic <client_id:client_secret>" if no token could be
+# obtained.
+```
+
+`EndPointBlank.AccessTokens` caches one token per application environment,
+keyed on the canonical base URL intake resolves the request to — not on the
+URL you passed — so a service that calls several targets holds a token for
+each. Called with no argument (or `nil`), `header/1` always returns the Basic
+form; that is what every call this SDK makes to intake itself uses.
 
 ### Request/response/log reporting
 
@@ -420,7 +443,7 @@ lib/end_point_blank.ex                    # configure/1, version/0
 lib/end_point_blank/config.ex             # settings + ENDPOINTBLANK_* env fallback
 lib/end_point_blank/authorization.ex      # Authorization header builder
 lib/end_point_blank/auth_cache.ex         # ETS-backed authorization result cache
-lib/end_point_blank/access_tokens.ex      # per-hostname access-token cache
+lib/end_point_blank/access_tokens.ex      # per-application-environment access-token cache, keyed on base URL
 lib/end_point_blank/request_store.ex      # per-process request-scoped state
 lib/end_point_blank/version_finder.ex     # API-version detection from a conn
 lib/end_point_blank/masking.ex            # + masking/json_path.ex
