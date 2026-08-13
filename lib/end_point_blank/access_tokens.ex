@@ -151,6 +151,20 @@ defmodule EndPointBlank.AccessTokens do
 
     if is_binary(token) and token != "" and is_binary(key) and key != "" do
       entry = %{token: token, expires_at: parse_expiry(payload["expired_at"])}
+
+      # The entry just matched (if any) was found unusable and is what got
+      # minted against. If intake resolved this call to a different
+      # canonical base_url than the one that entry was stored under, that
+      # old key must go -- otherwise it lingers, and being the longer of the
+      # two it keeps winning the longest-match race forever, shadowing the
+      # fresh entry and forcing a mint on every call. The failure branch
+      # below already deletes on this same basis; this makes success agree.
+      state =
+        case match_key(base_url, state) do
+          stale when stale != nil and stale != key -> Map.delete(state, stale)
+          _ -> state
+        end
+
       {token, Map.put(state, key, entry)}
     else
       new_state =
@@ -230,6 +244,17 @@ defmodule EndPointBlank.AccessTokens do
   # Deliberately not a port of intake's matcher: no normalization on either
   # side. A caller that passes a non-canonical URL simply misses and mints
   # again, which costs one HTTP call and is never a wrong answer.
+  #
+  # nil/empty short-circuits to "no match" instead of falling into the
+  # comparison below. With a cold cache (nothing to iterate) that comparison
+  # never runs and nil quietly proceeds to a mint; with a warm cache it runs
+  # `String.starts_with?(nil, ...)` and raises `FunctionClauseError`, killing
+  # this GenServer. Guarding here -- the one matcher both `token/1` and
+  # `exists?/1` reach through `fetch_or_generate/2` and `match/2` -- makes
+  # cold and warm agree on the same ordinary-miss outcome instead of one of
+  # them raising.
+  defp match_key(base_url, _entries) when base_url in [nil, ""], do: nil
+
   defp match_key(base_url, entries) do
     entries
     |> Map.keys()

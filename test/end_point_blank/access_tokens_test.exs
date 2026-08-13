@@ -484,4 +484,112 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.exists?(other)
     end
   end
+
+  describe "a nil or empty base_url" do
+    test "does not crash the GenServer when the cache is warm", %{base_url: base} do
+      # The crash this pins only happens with a warm cache -- the matcher's
+      # comparison never touches its argument when there is nothing to
+      # iterate. This is the consequence that matters: `AccessTokens` is a
+      # GenServer supervised `:one_for_one` with no `max_restarts` override,
+      # so it inherits OTP's default of 3 restarts in 5 seconds. A
+      # `FunctionClauseError` here does not just fail this call -- enough of
+      # them in a row take the whole supervisor, and the host application,
+      # down with it.
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      pid = Process.whereis(AccessTokens)
+
+      capture_log(fn -> assert AccessTokens.token(nil) == nil end)
+
+      # Comparing pids, not just `Process.alive?/1`: a crashed GenServer is
+      # restarted by its supervisor almost instantly, so a live process would
+      # still answer under this name even after a crash -- `Process.alive?/1`
+      # alone cannot tell "never died" from "died and came back." Identical
+      # pids mean the process that answered before is the one answering after.
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
+
+      # A restart would also have thrown away the cache. Confirm the entry
+      # seeded above is still being served rather than re-minted.
+      assert AccessTokens.token(base) == "token-1"
+      assert mint_count() == 2
+    end
+
+    test "reaches the same outcome whether the cache is cold or warm", %{base_url: base} do
+      # Cold cache: the match loop body never runs, so nothing raises today --
+      # the call proceeds to mint with a nil base_url and takes the "carried a
+      # token but no base_url" failure as an ordinary miss.
+      stub_minting()
+
+      cold_log = capture_log(fn -> assert AccessTokens.token(nil) == nil end)
+      assert cold_log =~ "carried a token but no base_url"
+
+      # Warm the cache with a real entry, then repeat with nil. The fix makes
+      # this take the exact same ordinary-miss path as the cold call above,
+      # rather than crashing the GenServer.
+      assert AccessTokens.token(base) == "token-2"
+
+      warm_log = capture_log(fn -> assert AccessTokens.token(nil) == nil end)
+      assert warm_log =~ "carried a token but no base_url"
+
+      # The real entry is undisturbed by either nil call.
+      assert AccessTokens.token(base) == "token-2"
+    end
+
+    test "an empty string base_url does not crash the GenServer when the cache is warm",
+         %{base_url: base} do
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      pid = Process.whereis(AccessTokens)
+
+      capture_log(fn -> assert AccessTokens.token("") == nil end)
+
+      assert Process.whereis(AccessTokens) == pid
+      assert AccessTokens.token(base) == "token-1"
+    end
+
+    test "exists?/1 with nil does not crash the GenServer when the cache is warm",
+         %{base_url: base} do
+      # exists?/1 reaches the same matcher through a different handle_call
+      # clause, so the fix has to hold there too, not just for token/1.
+      stub_minting()
+      AccessTokens.token(base)
+      pid = Process.whereis(AccessTokens)
+
+      refute AccessTokens.exists?(nil)
+
+      assert Process.whereis(AccessTokens) == pid
+    end
+  end
+
+  describe "a refresh that resolves to a different base_url" do
+    test "drops the stale key the matched entry was stored under", %{base_url: base} do
+      narrow = base <> "/orders"
+
+      # Seed a near-expiry entry under the longer, more specific URL -- the
+      # one that keeps winning the longest-match race as long as it survives.
+      stub_sequence([token_payload("narrow-token", base_url: narrow, ttl_seconds: 60)])
+      assert AccessTokens.token(narrow) == "narrow-token"
+
+      # The environment's registered base_url changes to a shorter path, so a
+      # refresh for the same caller URL now resolves to a different canonical
+      # base_url than the one that is cached.
+      stub_sequence([token_payload("broad-token", base_url: base, ttl_seconds: 3600)])
+      assert AccessTokens.token(narrow) == "broad-token"
+
+      state = :sys.get_state(AccessTokens)
+      refute Map.has_key?(state, narrow)
+      assert Map.has_key?(state, base)
+
+      # The sharpest check: a follow-up call for the same URL must be served
+      # from the fresh `base` entry, not mint again because the stale, still
+      # near-expiry `narrow` entry outranks it in the longest-match race.
+      # `mint_count/0` is cumulative for the whole test, and the two calls
+      # above already legitimately minted once each -- so no *new* mint on
+      # this third call is what keeps the total at 2, not 3.
+      stub_minting()
+      assert AccessTokens.token(narrow) == "broad-token"
+      assert mint_count() == 2
+    end
+  end
 end
