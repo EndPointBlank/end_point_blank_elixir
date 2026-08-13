@@ -245,15 +245,19 @@ defmodule EndPointBlank.AccessTokens do
   # side. A caller that passes a non-canonical URL simply misses and mints
   # again, which costs one HTTP call and is never a wrong answer.
   #
-  # nil/empty short-circuits to "no match" instead of falling into the
-  # comparison below. With a cold cache (nothing to iterate) that comparison
-  # never runs and nil quietly proceeds to a mint; with a warm cache it runs
-  # `String.starts_with?(nil, ...)` and raises `FunctionClauseError`, killing
-  # this GenServer. Guarding here -- the one matcher both `token/1` and
-  # `exists?/1` reach through `fetch_or_generate/2` and `match/2` -- makes
-  # cold and warm agree on the same ordinary-miss outcome instead of one of
-  # them raising.
-  defp match_key(base_url, _entries) when base_url in [nil, ""], do: nil
+  # Anything that is not a usable binary short-circuits to "no match" instead
+  # of falling into the comparison below -- not just nil and "". With a cold
+  # cache (nothing to iterate) that comparison never runs and a bad value
+  # quietly proceeds to a mint; with a warm cache it runs
+  # `String.starts_with?(base_url, ...)`, which requires both arguments to be
+  # binaries and raises `FunctionClauseError` for anything else -- an
+  # integer, atom, boolean, list, map, tuple, not just nil -- killing this
+  # GenServer by the identical mechanism. `token/1` and `exists?/1` are
+  # public API; a host application can pass anything. Guarding here -- the
+  # one matcher both reach through `fetch_or_generate/2` and `match/2` --
+  # makes cold and warm agree on the same ordinary-miss outcome for every
+  # non-binary shape, instead of one of them raising.
+  defp match_key(base_url, _entries) when not is_binary(base_url) or base_url == "", do: nil
 
   defp match_key(base_url, entries) do
     entries

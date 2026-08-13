@@ -548,6 +548,41 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.token(base) == "token-1"
     end
 
+    test "an integer base_url does not crash the GenServer when the cache is warm",
+         %{base_url: base} do
+      # Not just nil and "" -- any non-binary reaches the identical
+      # `String.starts_with?/2` call and raises the identical
+      # `FunctionClauseError`. `token/1` is public API; a host application
+      # can pass anything.
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      pid = Process.whereis(AccessTokens)
+
+      capture_log(fn -> assert AccessTokens.token(123) == nil end)
+
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
+      assert AccessTokens.token(base) == "token-1"
+    end
+
+    test "an atom base_url does not crash the GenServer when the cache is warm",
+         %{base_url: base} do
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      pid = Process.whereis(AccessTokens)
+
+      # Not asserting the return value here: an atom argument survives the
+      # matcher (this test's point) but still goes out over the wire, where
+      # JSON encoding turns it into a string before it comes back around --
+      # what matters is that the process answering afterward is still the
+      # one that was answering before.
+      capture_log(fn -> AccessTokens.token(:not_a_url) end)
+
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
+      assert AccessTokens.token(base) == "token-1"
+    end
+
     test "exists?/1 with nil does not crash the GenServer when the cache is warm",
          %{base_url: base} do
       # exists?/1 reaches the same matcher through a different handle_call
