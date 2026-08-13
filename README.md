@@ -23,7 +23,7 @@ If you don't have Hex org access yet, depend on the git repo directly:
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.3.1"}
+    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.6.0"}
   ]
 end
 ```
