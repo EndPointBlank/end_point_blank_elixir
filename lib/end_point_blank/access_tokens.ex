@@ -212,8 +212,9 @@ defmodule EndPointBlank.AccessTokens do
   # what the other four SDKs do. A guess, but a working one: treating the token
   # as unusable instead means a mint on every inbound request for as long as the
   # intake misbehaves, and with nothing held every one of those requests falls
-  # back to Basic. If the token really does die sooner, the 401 retry
-  # invalidates it and mints another.
+  # back to Basic. There is no retry catching a token that dies sooner than the
+  # guess -- invalidate/1 has no caller on this path -- so a bad guess means
+  # 401s until the cache's own expiry-based refresh catches up.
   defp parse_expiry(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
       {:ok, dt, _} -> dt
