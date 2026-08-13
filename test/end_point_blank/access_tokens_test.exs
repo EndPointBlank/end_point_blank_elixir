@@ -583,6 +583,43 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.token(base) == "token-1"
     end
 
+    test "a map base_url does not crash the GenServer when the cache is warm",
+         %{base_url: base} do
+      # The matcher already lets this through as a miss (it isn't a binary).
+      # The crash this pins is a step further along: the ordinary-miss
+      # failure branch logs `"...for #{base_url}..."`, and `String.Chars` has
+      # no implementation for Map, so that interpolation itself raises
+      # `Protocol.UndefinedError` and kills the GenServer -- same consequence
+      # as the FunctionClauseError, one step later in the same call.
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      pid = Process.whereis(AccessTokens)
+
+      capture_log(fn -> AccessTokens.token(%{}) end)
+
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
+      assert AccessTokens.token(base) == "token-1"
+    end
+
+    test "a tuple base_url does not crash the GenServer when the cache is warm",
+         %{base_url: base} do
+      # A tuple can't even be minted -- Jason has no encoder for it, so
+      # `safe_generate/1`'s own rescue catches that and returns nil -- but
+      # the failure branch's `"...for #{base_url}..."` log line is reached
+      # regardless, outside that rescue boundary, and raises the same way a
+      # map does.
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      pid = Process.whereis(AccessTokens)
+
+      capture_log(fn -> AccessTokens.token({1, 2}) end)
+
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
+      assert AccessTokens.token(base) == "token-1"
+    end
+
     test "exists?/1 with nil does not crash the GenServer when the cache is warm",
          %{base_url: base} do
       # exists?/1 reaches the same matcher through a different handle_call

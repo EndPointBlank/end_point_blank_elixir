@@ -173,8 +173,15 @@ defmodule EndPointBlank.AccessTokens do
           stale -> Map.delete(state, stale)
         end
 
+      # inspect/1, not string interpolation: base_url is whatever a caller
+      # passed to token/1 or exists?/1, and String.Chars has no
+      # implementation for a map, tuple, PID, function, reference, port, or a
+      # non-codepoint list. Interpolating it directly would raise
+      # Protocol.UndefinedError right here, on the ordinary-miss path this
+      # very branch exists to keep safe -- the crash would just move one line
+      # rather than close. inspect/1 accepts any term.
       Logger.error(
-        "[EndPointBlank] Failed to generate access token for #{base_url}: #{failure_reason(payload)}"
+        "[EndPointBlank] Failed to generate access token for #{inspect(base_url)}: #{failure_reason(payload)}"
       )
 
       {nil, new_state}
