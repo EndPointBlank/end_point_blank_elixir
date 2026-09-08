@@ -266,6 +266,58 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
       end)
     end
 
+    test "treats a 2xx carrying no token at all as a server error" do
+      # No `token` key and no `error` key either -- a well-formed JSON object
+      # that simply is not a mint. SUCCESS has to mean a token was issued, or
+      # every caller has to re-check the payload by hand, and that is the
+      # check that gets forgotten.
+      stub(fn conn ->
+        conn
+        |> Plug.Conn.put_status(200)
+        |> Req.Test.json(%{"base_url" => "https://api.example.com"})
+      end)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, {:server_error, 200}}
+        end)
+
+      assert log =~ "no token in response"
+    end
+
+    test "treats a 2xx carrying an empty token as a server error" do
+      # Present but empty is not a token. An empty string would be cached, sent
+      # as `Bearer `, and rejected by the very service it was minted for.
+      stub(fn conn ->
+        conn
+        |> Plug.Conn.put_status(200)
+        |> Req.Test.json(%{"token" => "", "base_url" => "https://api.example.com"})
+      end)
+
+      capture_log(fn ->
+        assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                 {:error, {:server_error, 200}}
+      end)
+    end
+
+    test "treats a 2xx carrying an empty base_url as a server error" do
+      # Same reasoning one field over: an empty `base_url` is not a key the
+      # token can be cached under, and intake's column is NOT NULL, so it is
+      # a broken server rather than a refused request.
+      stub(fn conn ->
+        conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc", "base_url" => ""})
+      end)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, {:server_error, 201}}
+        end)
+
+      assert log =~ "carried a token but no base_url"
+    end
+
     test "treats a 2xx carrying no token as a server error, with the real 2xx status" do
       # A success status the SDK cannot read an access token out of is a broken
       # server, and the status it actually sent is the truthful thing to carry.
@@ -348,6 +400,47 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
       end
 
       stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
+
+      capture_log(fn ->
+        assert GenerateAccessToken.generate("https://api.example.com/orders") == nil
+      end)
+    end
+
+    test "answers nil for every 2xx it cannot read a token out of" do
+      # `generate/1` is the payload-or-nil accessor, and payload means a token
+      # was minted. Each of these bodies looks like an answer and is not one:
+      # there is nothing to send as a credential and nowhere to cache it.
+      #
+      # Handing the body back instead would give a caller a truthy value for a
+      # request that produced no token -- the failure `generate_result/1`
+      # exists to remove, one layer down. The body is not lost; it is what the
+      # log line above reports, and the four other SDKs now match this rule.
+      bodies = [
+        %{"base_url" => "https://api.example.com"},
+        %{"error" => "environment is paused"},
+        %{"token" => "abc"},
+        %{"token" => "", "base_url" => "https://api.example.com"},
+        %{"token" => "abc", "base_url" => ""}
+      ]
+
+      for body <- bodies do
+        stub(fn conn -> conn |> Plug.Conn.put_status(200) |> Req.Test.json(body) end)
+
+        capture_log(fn ->
+          assert GenerateAccessToken.generate("https://api.example.com/orders") == nil
+        end)
+      end
+    end
+
+    test "answers nil for an undecodable 2xx body rather than the raw binary" do
+      # Req answers a body it cannot decode as a raw binary rather than
+      # raising. The same rule applies at the one edge where the body is not a
+      # map at all: a proxy's HTML error page is not a token.
+      stub(fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("text/html")
+        |> Plug.Conn.send_resp(200, "<html>hello</html>")
+      end)
 
       capture_log(fn ->
         assert GenerateAccessToken.generate("https://api.example.com/orders") == nil
