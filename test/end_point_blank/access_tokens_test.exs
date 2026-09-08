@@ -921,6 +921,49 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.last_failure(base <> "/orders/3") == nil
     end
 
+    test "keeps only the most recent failures, so a revoked credential cannot grow the map",
+         %{base_url: base} do
+      # The exact scenario this story is about, and the one where the "a
+      # success clears it" bound does not apply: the credential is revoked, so
+      # every mint fails forever. A service walking /orders/1, /orders/2, ...
+      # asks about a different URL each time, and nothing ever succeeds to
+      # clear any of it. Unbounded growth inside a long-lived GenServer, in an
+      # SDK embedded in a customer's application.
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "revoked"})
+      end)
+
+      capture_log(fn ->
+        for i <- 1..80 do
+          assert AccessTokens.token(base <> "/orders/#{i}") == nil
+        end
+      end)
+
+      %{failures: failures} = :sys.get_state(AccessTokens)
+      assert map_size(failures) == 64
+
+      # Newest kept, oldest evicted -- a caller asking about the URL it just
+      # called still gets its answer.
+      assert AccessTokens.last_failure(base <> "/orders/80") == :credential_rejected
+      assert AccessTokens.last_failure(base <> "/orders/17") == :credential_rejected
+      assert AccessTokens.last_failure(base <> "/orders/1") == nil
+      assert AccessTokens.last_failure(base <> "/orders/16") == nil
+    end
+
+    test "re-recording a url that is already held does not grow the map", %{base_url: base} do
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "revoked"})
+      end)
+
+      capture_log(fn ->
+        for _ <- 1..10, do: assert(AccessTokens.token(base) == nil)
+      end)
+
+      %{failures: failures} = :sys.get_state(AccessTokens)
+      assert map_size(failures) == 1
+      assert AccessTokens.last_failure(base) == :credential_rejected
+    end
+
     test "a failure for one base url is not reported for another", %{base_url: base} do
       other = "https://other-" <> String.trim_leading(base, "https://")
 

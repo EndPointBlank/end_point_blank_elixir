@@ -15,7 +15,9 @@
   token out of, carrying the real 2xx status.
 - `EndPointBlank.AccessTokens.last_failure/1`, reporting the last failure
   recorded for a URL, using exactly those reasons. A successful mint clears
-  the record.
+  the record, and only the 64 most recently failed URLs are kept so a revoked
+  credential — which fails every mint forever — cannot grow the map without
+  bound.
 - A distinct, loud log line when intake rejects the credential, instead of the
   generic "Failed to generate access token" that reads as an outage.
 

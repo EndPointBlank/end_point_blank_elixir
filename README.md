@@ -274,7 +274,10 @@ that was actually received. A 401 whose body is not JSON — which is what a
 proxy or gateway in front of intake answers — is still `:credential_rejected`.
 `{:transport_error, reason}` means no HTTP status was obtained at all.
 
-A successful mint clears the record. `EndPointBlank.Commands.GenerateAccessToken.generate_result/1`
+A successful mint clears the record, and only the 64 most recently failed
+URLs are held — ask about a URL you just called and it will be there.
+
+`EndPointBlank.Commands.GenerateAccessToken.generate_result/1`
 is the same distinction one layer down, for callers that mint directly:
 `{:ok, payload}` or `{:error, reason}` with the same reasons.
 `generate/1` still answers payload-or-`nil`.

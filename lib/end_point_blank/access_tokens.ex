@@ -55,6 +55,10 @@ defmodule EndPointBlank.AccessTokens do
   # host application's request process while the mint was still in flight.
   @call_timeout_ms 20_000
 
+  # How many recorded failures to keep. See record_failure/3 for why this
+  # exists; the same figure the JS SDK bounds at, so the five agree.
+  @max_recorded_failures 64
+
   @typedoc """
   Why the last mint for a URL failed, or `nil` if the last one succeeded (or
   none has been attempted).
@@ -103,6 +107,10 @@ defmodule EndPointBlank.AccessTokens do
   Pass the same URL you passed to `token/1`: the record is kept under the URL
   the caller asked about, not under the canonical base URL intake resolved it
   to, because on a failure there is no resolved base URL to key it under.
+
+  Only the #{@max_recorded_failures} most recently failed URLs are kept, so
+  this answers `nil` for a URL whose failure has since been pushed out by
+  newer ones. Ask about a URL you just called and it will be there.
 
       case AccessTokens.token(url) do
         nil ->
@@ -182,7 +190,13 @@ defmodule EndPointBlank.AccessTokens do
     # Map.get/2 with a non-binary key is simply a miss -- failures are only
     # ever recorded under binary keys -- so this needs no guard of its own to
     # keep a host application's stray argument from killing this process.
-    {:reply, Map.get(state.failures, base_url), state}
+    reason =
+      case Map.get(state.failures, base_url) do
+        {reason, _seq} -> reason
+        nil -> nil
+      end
+
+    {:reply, reason, state}
   end
 
   @impl true
@@ -197,7 +211,7 @@ defmodule EndPointBlank.AccessTokens do
 
   # Helpers
 
-  defp empty_state, do: %{tokens: %{}, failures: %{}}
+  defp empty_state, do: %{tokens: %{}, failures: %{}, failure_seq: 0}
 
   defp fetch_or_generate(base_url, state) do
     case match(base_url, state.tokens) do
@@ -264,7 +278,7 @@ defmodule EndPointBlank.AccessTokens do
 
     log_failure(base_url, reason)
 
-    {nil, %{state | tokens: tokens, failures: record_failure(state.failures, base_url, reason)}}
+    {nil, record_failure(%{state | tokens: tokens}, base_url, reason)}
   end
 
   # A 401 is not an outage. Logging it as one -- "Failed to generate access
@@ -296,18 +310,44 @@ defmodule EndPointBlank.AccessTokens do
   defp describe({:server_error, status}), do: "intake failed: status=#{status}"
   defp describe({:transport_error, reason}), do: "could not reach intake: #{inspect(reason)}"
 
-  # Failures are keyed by the URL the caller asked about, because a failed
-  # mint has no resolved base URL to key on. That set is unbounded in
-  # principle -- a caller passing a different resource URL every time would
-  # grow it -- so it is bounded from the other end instead: any success under
-  # a covering base URL drops every record it covers (see clear_failures/3),
-  # and clear/0 drops the lot. Only a binary is recorded; a stray non-binary
-  # argument logs loudly but is not worth a permanent map entry.
-  defp record_failure(failures, base_url, reason) when is_binary(base_url) and base_url != "" do
-    Map.put(failures, base_url, reason)
+  # Failures are keyed by the URL the caller asked about, because a failed mint
+  # has no resolved base URL to key on -- and the set of URLs a caller can ask
+  # about is unbounded.
+  #
+  # DO NOT REMOVE THIS CAP as redundant with clear_failures/3. That only
+  # bounds the map while mints succeed, and the case this whole module exists
+  # to report is precisely the one where none of them do: a revoked
+  # credential fails every mint forever, so a service walking /orders/1,
+  # /orders/2, ... records an entry per URL and nothing ever clears any of
+  # them. Unbounded growth in a long-lived GenServer, inside a customer's
+  # application, in exactly the failure mode the feature is for. So the cap is
+  # enforced here, on insert, not only on success.
+  #
+  # Oldest out, by insertion order: a caller asking about a URL it just called
+  # always gets its answer, which is the only access pattern this serves.
+  # Re-recording a URL already held refreshes it in place rather than growing
+  # anything, so the revoked-credential-plus-one-URL case stays at one entry.
+  #
+  # Only a binary is recorded; a stray non-binary argument logs loudly but is
+  # not worth a permanent map entry.
+  defp record_failure(state, base_url, reason) when is_binary(base_url) and base_url != "" do
+    seq = state.failure_seq + 1
+    failures = Map.put(state.failures, base_url, {reason, seq})
+
+    failures =
+      if map_size(failures) > @max_recorded_failures,
+        do: Map.delete(failures, oldest_key(failures)),
+        else: failures
+
+    %{state | failures: failures, failure_seq: seq}
   end
 
-  defp record_failure(failures, _base_url, _reason), do: failures
+  defp record_failure(state, _base_url, _reason), do: state
+
+  defp oldest_key(failures) do
+    {url, _entry} = Enum.min_by(failures, fn {_url, {_reason, seq}} -> seq end)
+    url
+  end
 
   # A success says every failure it covers is stale: the exact URL that was
   # asked about, and anything under the base URL intake resolved it to.
