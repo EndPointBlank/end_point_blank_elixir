@@ -59,17 +59,14 @@ defmodule EndPointBlank.AccessTokens do
   Why the last mint for a URL failed, or `nil` if the last one succeeded (or
   none has been attempted).
 
-  `:credential_rejected` and `{:request_rejected, status}` are permanent --
-  retrying changes nothing until the credential is re-issued or the
-  environment is registered. `{:server_error, status}`,
-  `{:transport_error, reason}` and `{:invalid_response, reason}` are transient.
-
-  `{:invalid_response, reason}` is the one this module adds to
-  `t:EndPointBlank.Commands.GenerateAccessToken.failure/0`: intake answered
-  2xx, but with a body this cache cannot store -- no token, or a token with no
-  `base_url` to key it under. A broken server, not a refused caller.
+  Exactly `t:EndPointBlank.Commands.GenerateAccessToken.failure/0`, so every
+  SDK reports the same set: `:credential_rejected` and
+  `{:request_rejected, status}` are permanent -- retrying changes nothing
+  until the credential is re-issued or the environment is registered --
+  while `{:server_error, status}` and `{:transport_error, reason}` are
+  transient.
   """
-  @type failure :: GenerateAccessToken.failure() | {:invalid_response, String.t()}
+  @type failure :: GenerateAccessToken.failure()
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, nil, name: __MODULE__)
@@ -214,28 +211,24 @@ defmodule EndPointBlank.AccessTokens do
     end
   end
 
+  # `generate_result/1` guarantees an `{:ok, payload}` carries a map with a
+  # non-empty `token` and `base_url`; a 2xx without them is classified there as
+  # `{:server_error, status}` and never arrives here. That guarantee is what
+  # lets this destructure without re-checking -- and `safe_generate/1`'s rescue
+  # is what keeps a future break in it from killing this GenServer rather than
+  # merely failing the mint.
   defp generate_and_store(base_url, state) do
     case safe_generate(base_url) do
-      {:ok, payload} ->
-        token = field(payload, "token")
-        key = field(payload, "base_url")
-
-        if usable_string?(token) and usable_string?(key) do
-          store(base_url, key, token, payload, state)
-        else
-          # A 2xx that cannot be cached is a broken intake, and saying so is
-          # not the same as saying the credential was refused. Keeping it a
-          # distinct shape is the point of the whole story.
-          fail(base_url, {:invalid_response, failure_reason(payload)}, state)
-        end
+      {:ok, token, key, expired_at} ->
+        store(base_url, key, token, expired_at, state)
 
       {:error, reason} ->
         fail(base_url, reason, state)
     end
   end
 
-  defp store(base_url, key, token, payload, state) do
-    entry = %{token: token, expires_at: parse_expiry(field(payload, "expired_at"))}
+  defp store(base_url, key, token, expired_at, state) do
+    entry = %{token: token, expires_at: parse_expiry(expired_at)}
 
     # The entry just matched (if any) was found unusable and is what got
     # minted against. If intake resolved this call to a different
@@ -302,7 +295,6 @@ defmodule EndPointBlank.AccessTokens do
   defp describe({:request_rejected, status}), do: "intake rejected the request: status=#{status}"
   defp describe({:server_error, status}), do: "intake failed: status=#{status}"
   defp describe({:transport_error, reason}), do: "could not reach intake: #{inspect(reason)}"
-  defp describe({:invalid_response, reason}), do: reason
 
   # Failures are keyed by the URL the caller asked about, because a failed
   # mint has no resolved base URL to key on. That set is unbounded in
@@ -328,35 +320,6 @@ defmodule EndPointBlank.AccessTokens do
     end)
     |> Map.new()
   end
-
-  # Only a map can be a token document. A 2xx whose decoded body is a list, a
-  # string or a number would otherwise reach `body["token"]`, and Access
-  # raises for those -- inside this GenServer, outside safe_generate/1's
-  # rescue. An SDK must not be able to crash the application it is embedded in
-  # because intake is misconfigured.
-  defp field(payload, key) when is_map(payload), do: Map.get(payload, key)
-  defp field(_payload, _key), do: nil
-
-  defp usable_string?(value), do: is_binary(value) and value != ""
-
-  defp failure_reason(%{"error" => error}) when is_binary(error), do: error
-
-  # intake is expected to send "error" as a string. A misbehaving intake
-  # sending anything else (a nested object, a number) must not crash this
-  # GenServer either -- inspect/1, not the plain string interpolation this
-  # value flows into at the call site, for the same reason base_url got the
-  # same treatment above: "An SDK must not be able to crash the application
-  # it is embedded in because intake is misconfigured."
-  defp failure_reason(%{"error" => error}), do: inspect(error)
-
-  defp failure_reason(%{"token" => token}) when is_binary(token) and token != "" do
-    # Distinct from a rejected request: intake's base_url is NOT NULL, and it
-    # answers 422 rather than minting when the caller's URL resolves to no
-    # environment. A 201 without one is a broken server.
-    "response carried a token but no base_url"
-  end
-
-  defp failure_reason(_payload), do: "no token in response"
 
   # An unreadable or absent expiry keeps the token for a default hour, which is
   # what the other four SDKs do. A guess, but a working one: treating the token
@@ -387,8 +350,18 @@ defmodule EndPointBlank.AccessTokens do
   # It maps to a transport error, never to `:credential_rejected`: a raise
   # says nothing whatever about the credential, and calling it permanent
   # would tell every caller to stop retrying a bug in this SDK.
+  #
+  # The payload is pulled apart in here rather than at the call site so that
+  # it is covered by the same rescue: if `generate_result/1` ever stopped
+  # guaranteeing a map, this would fail the mint rather than kill the process.
   defp safe_generate(base_url) do
-    GenerateAccessToken.generate_result(base_url)
+    case GenerateAccessToken.generate_result(base_url) do
+      {:ok, payload} ->
+        {:ok, payload["token"], payload["base_url"], payload["expired_at"]}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   rescue
     error ->
       Logger.error("[EndPointBlank] Minting an access token raised: #{Exception.message(error)}")

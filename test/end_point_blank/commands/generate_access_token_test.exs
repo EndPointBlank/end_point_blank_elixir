@@ -38,12 +38,17 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
     stub(fn conn ->
       conn
       |> Plug.Conn.put_status(201)
-      |> Req.Test.json(%{"token" => "abc", "expired_at" => "2030-01-01T00:00:00Z"})
+      |> Req.Test.json(%{
+        "token" => "abc",
+        "expired_at" => "2030-01-01T00:00:00Z",
+        "base_url" => "https://api.example.com"
+      })
     end)
 
     assert GenerateAccessToken.generate("https://api.example.com/orders") == %{
              "token" => "abc",
-             "expired_at" => "2030-01-01T00:00:00Z"
+             "expired_at" => "2030-01-01T00:00:00Z",
+             "base_url" => "https://api.example.com"
            }
   end
 
@@ -117,11 +122,20 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
       stub(fn conn ->
         conn
         |> Plug.Conn.put_status(201)
-        |> Req.Test.json(%{"token" => "abc", "expired_at" => "2030-01-01T00:00:00Z"})
+        |> Req.Test.json(%{
+          "token" => "abc",
+          "expired_at" => "2030-01-01T00:00:00Z",
+          "base_url" => "https://api.example.com"
+        })
       end)
 
       assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
-               {:ok, %{"token" => "abc", "expired_at" => "2030-01-01T00:00:00Z"}}
+               {:ok,
+                %{
+                  "token" => "abc",
+                  "expired_at" => "2030-01-01T00:00:00Z",
+                  "base_url" => "https://api.example.com"
+                }}
     end
 
     test "returns :credential_rejected on 401" do
@@ -187,6 +201,121 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
       end)
     end
 
+    test "classifies a 401 by its status even when the body is not JSON" do
+      # The SDK reaches intake through Caddy in prod, and any proxy, WAF, ALB
+      # or auth gateway in front of the app can answer 401 with an HTML error
+      # page the app never generated. The credential genuinely is rejected and
+      # the body genuinely is unreadable. Deciding on the body first would
+      # call this transient and retry a dead credential forever -- the exact
+      # bug this story exists to remove.
+      stub(fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("text/html")
+        |> Plug.Conn.send_resp(401, "<html><body><h1>401 Unauthorized</h1></body></html>")
+      end)
+
+      capture_log(fn ->
+        assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                 {:error, :credential_rejected}
+      end)
+    end
+
+    test "classifies other 4xx and 5xx by status even when the body is not JSON" do
+      for {status, expected} <- [{400, {:request_rejected, 400}}, {503, {:server_error, 503}}] do
+        stub(fn conn ->
+          conn
+          |> Plug.Conn.put_resp_content_type("text/html")
+          |> Plug.Conn.send_resp(status, "<html>gateway says no</html>")
+        end)
+
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, expected}
+        end)
+      end
+    end
+
+    test "treats a 2xx whose body it cannot read as a server error" do
+      # The one case where the body decides: a success status the SDK cannot
+      # read is a broken server. Req hands back the raw binary rather than
+      # raising when it cannot decode, so this has to be looked for.
+      stub(fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("text/html")
+        |> Plug.Conn.send_resp(200, "<html>hello</html>")
+      end)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, {:server_error, 200}}
+        end)
+
+      assert log =~ "GenerateAccessToken failed"
+    end
+
+    test "treats a 2xx that decodes to something other than an object as a server error" do
+      # Parseable, but still not a document this can read a token out of.
+      stub(fn conn ->
+        conn |> Plug.Conn.put_status(201) |> Req.Test.json(["not", "an", "object"])
+      end)
+
+      capture_log(fn ->
+        assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                 {:error, {:server_error, 201}}
+      end)
+    end
+
+    test "treats a 2xx carrying no token as a server error, with the real 2xx status" do
+      # A success status the SDK cannot read an access token out of is a broken
+      # server, and the status it actually sent is the truthful thing to carry.
+      stub(fn conn ->
+        conn |> Plug.Conn.put_status(200) |> Req.Test.json(%{"error" => "environment is paused"})
+      end)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, {:server_error, 200}}
+        end)
+
+      # The "why" lives in the log line, which is where a human debugging this
+      # looks -- it does not need its own outcome in the taxonomy.
+      assert log =~ "environment is paused"
+    end
+
+    test "treats a 2xx carrying a token but no base_url as a server error" do
+      # intake's base_url is NOT NULL and it answers 422 rather than minting
+      # when the caller's URL resolves to no environment, so a 201 without one
+      # is a broken server rather than a refused caller.
+      stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, {:server_error, 201}}
+        end)
+
+      assert log =~ "carried a token but no base_url"
+    end
+
+    test "reports a non-string error field without crashing" do
+      # intake is expected to send "error" as a string. Anything else -- a
+      # nested object, a number -- flows into the same log line, so it goes
+      # through inspect/1 rather than plain interpolation.
+      stub(fn conn ->
+        conn |> Plug.Conn.put_status(200) |> Req.Test.json(%{"error" => %{"code" => "revoked"}})
+      end)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, {:server_error, 200}}
+        end)
+
+      assert log =~ "revoked"
+    end
+
     test "returns {:transport_error, reason} when intake cannot be reached" do
       stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
 
@@ -206,8 +335,9 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
     # answer arrives alongside it rather than in place of it.
 
     test "still returns the payload on success and nil on every failure" do
-      stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
-      assert GenerateAccessToken.generate("https://api.example.com/orders") == %{"token" => "abc"}
+      doc = %{"token" => "abc", "base_url" => "https://api.example.com"}
+      stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(doc) end)
+      assert GenerateAccessToken.generate("https://api.example.com/orders") == doc
 
       for status <- [401, 400, 403, 422, 500] do
         stub(fn conn -> conn |> Plug.Conn.put_status(status) |> Req.Test.json(%{}) end)

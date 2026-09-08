@@ -261,14 +261,23 @@ case EndPointBlank.AccessTokens.last_failure("https://api.example.com/orders") d
   # Transient — worth trying again.
   {:server_error, _status} -> :ok
   {:transport_error, _reason} -> :ok
-  {:invalid_response, _reason} -> :ok
 end
 ```
+
+`{:server_error, status}` also covers a 2xx the SDK cannot read an access
+token out of — an undecodable body, or one carrying no `token` or no
+`base_url`. The status is the real one intake sent; *why* a 2xx was unusable
+is in the log line rather than in the return value.
+
+Classification is on the HTTP status alone; the body never overrides a status
+that was actually received. A 401 whose body is not JSON — which is what a
+proxy or gateway in front of intake answers — is still `:credential_rejected`.
+`{:transport_error, reason}` means no HTTP status was obtained at all.
 
 A successful mint clears the record. `EndPointBlank.Commands.GenerateAccessToken.generate_result/1`
 is the same distinction one layer down, for callers that mint directly:
 `{:ok, payload}` or `{:error, reason}` with the same reasons.
-`generate/1` still answers payload-or-`nil` and is unchanged.
+`generate/1` still answers payload-or-`nil`.
 
 ### Request/response/log reporting
 

@@ -809,38 +809,43 @@ defmodule EndPointBlank.AccessTokensTest do
       assert Process.whereis(AccessTokens) == pid
     end
 
-    test "records an invalid response distinctly from a rejected credential", %{base_url: base} do
-      # A 201 carrying no base_url is a broken server. It is not the
-      # credential, and it is not a status code either -- it needs its own
-      # answer rather than being folded into one of the others.
+    test "records a 2xx it cannot cache as a server error, not a rejected credential",
+         %{base_url: base} do
+      # A 201 carrying no base_url is a broken server. There is a real status
+      # to report -- the 201 itself -- so this needs no outcome of its own,
+      # and the "why" stays in the log line where a human will look for it.
       Req.Test.stub(__MODULE__.Stub, fn conn ->
         conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "tok-1"})
       end)
 
-      capture_log(fn -> assert AccessTokens.token(base) == nil end)
+      log = capture_log(fn -> assert AccessTokens.token(base) == nil end)
 
-      assert {:invalid_response, reason} = AccessTokens.last_failure(base)
-      assert reason =~ "carried a token but no base_url"
+      assert AccessTokens.last_failure(base) == {:server_error, 201}
+      assert log =~ "carried a token but no base_url"
+      refute log =~ "credential was rejected"
     end
 
-    test "reports the error string intake sent with an uncacheable 2xx", %{base_url: base} do
-      # A 200 carrying `{"error": "..."}` and no token. Still not the
-      # credential -- intake says 401 for that -- so it stays an invalid
-      # response, but the reason it gave is what gets carried back.
+    test "reports an uncacheable 2xx under its real status", %{base_url: base} do
+      # A 200 carrying `{"error": "..."}` and no token. Not the credential --
+      # intake says 401 for that -- and there is a real status to carry, so it
+      # needs no outcome of its own. The reason it gave is in the log.
       Req.Test.stub(__MODULE__.Stub, fn conn ->
         conn |> Plug.Conn.put_status(200) |> Req.Test.json(%{"error" => "environment is paused"})
       end)
 
       log = capture_log(fn -> assert AccessTokens.token(base) == nil end)
 
-      assert AccessTokens.last_failure(base) == {:invalid_response, "environment is paused"}
+      assert AccessTokens.last_failure(base) == {:server_error, 200}
       assert log =~ "environment is paused"
+      refute log =~ "credential was rejected"
     end
 
     test "survives a 2xx whose body is not a map at all", %{base_url: base} do
-      # Nothing guarantees intake's 2xx body decodes to a map. A list reaches
-      # `body["token"]`, and Access raises for a list with a binary key --
-      # inside this GenServer, past the point safe_generate/1's rescue covers.
+      # Nothing guarantees intake's 2xx body decodes to an object. A list would
+      # reach `payload["token"]`, and Access raises for a list with a binary
+      # key -- inside this GenServer. It never gets that far: a 2xx the SDK
+      # cannot read a document out of is classified as a broken server before
+      # it is ever handed over.
       stub_minting()
       assert AccessTokens.token(base) == "token-1"
       pid = Process.whereis(AccessTokens)
@@ -853,10 +858,28 @@ defmodule EndPointBlank.AccessTokensTest do
 
       capture_log(fn -> assert AccessTokens.token(other) == nil end)
 
-      assert AccessTokens.last_failure(other) == {:invalid_response, "no token in response"}
+      assert AccessTokens.last_failure(other) == {:server_error, 200}
       assert Process.whereis(AccessTokens) == pid
       assert Process.alive?(pid)
       assert AccessTokens.token(base) == "token-1"
+    end
+
+    test "reports :credential_rejected for a proxy 401 carrying an HTML body", %{base_url: base} do
+      # End to end, through the cache: in prod this SDK reaches intake through
+      # Caddy, and a gateway in front of the app can answer 401 with an HTML
+      # page. The status is the whole signal, and it must survive the body
+      # being unreadable -- otherwise the loudest failure in the system
+      # reports as a transient blip.
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("text/html")
+        |> Plug.Conn.send_resp(401, "<html><body><h1>401 Unauthorized</h1></body></html>")
+      end)
+
+      log = capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+      assert AccessTokens.last_failure(base) == :credential_rejected
+      assert log =~ "credential was rejected"
     end
 
     test "a successful mint clears an earlier failure", %{base_url: base} do
