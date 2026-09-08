@@ -22,11 +22,24 @@ defmodule EndPointBlank.AccessTokens do
   Tokens are proactively refreshed when they are within two minutes of expiry
   to avoid serving one that dies in flight -- an expired token can never be
   revived, only replaced.
+
+  ## Why a mint failed
+
+  `token/1` answers `nil` for every failure, because its callers fall back to
+  Basic and have nothing else to do with the detail. But the detail matters:
+  intake answers 401 for a credential it has rejected, and that is permanent
+  until a human re-issues the credential, where a 5xx or a refused connection
+  will likely be gone on the next call. `last_failure/1` reports the last one
+  for a given URL, so a caller that wants to stop hammering intake -- or
+  alarm -- can tell those apart. See `EndPointBlank.Commands.GenerateAccessToken`
+  for the full taxonomy.
   """
 
   use GenServer
 
   require Logger
+
+  alias EndPointBlank.Commands.GenerateAccessToken
 
   @refresh_buffer_seconds 120
   @min_ttl_seconds 30
@@ -41,6 +54,22 @@ defmodule EndPointBlank.AccessTokens do
   # the default, a slow intake would time out every caller and take down the
   # host application's request process while the mint was still in flight.
   @call_timeout_ms 20_000
+
+  @typedoc """
+  Why the last mint for a URL failed, or `nil` if the last one succeeded (or
+  none has been attempted).
+
+  `:credential_rejected` and `{:request_rejected, status}` are permanent --
+  retrying changes nothing until the credential is re-issued or the
+  environment is registered. `{:server_error, status}`,
+  `{:transport_error, reason}` and `{:invalid_response, reason}` are transient.
+
+  `{:invalid_response, reason}` is the one this module adds to
+  `t:EndPointBlank.Commands.GenerateAccessToken.failure/0`: intake answered
+  2xx, but with a body this cache cannot store -- no token, or a token with no
+  `base_url` to key it under. A broken server, not a refused caller.
+  """
+  @type failure :: GenerateAccessToken.failure() | {:invalid_response, String.t()}
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, nil, name: __MODULE__)
@@ -58,6 +87,8 @@ defmodule EndPointBlank.AccessTokens do
   includes a response that carried a token but no `base_url` (nothing to
   cache it under) as well as the cache failing to answer in time -- so an
   intake outage costs the caller a fall back to Basic rather than its request.
+
+  Use `last_failure/1` to find out which kind of failure a `nil` was.
   """
   def token(base_url) do
     call({:token, base_url}, nil)
@@ -66,6 +97,39 @@ defmodule EndPointBlank.AccessTokens do
   @doc "Returns true if a token covering `base_url` is held and not about to expire."
   def exists?(base_url) do
     call({:exists, base_url}, false)
+  end
+
+  @doc """
+  Returns why the last mint attempted for `base_url` failed, or `nil` if the
+  last one succeeded or none has been made.
+
+  Pass the same URL you passed to `token/1`: the record is kept under the URL
+  the caller asked about, not under the canonical base URL intake resolved it
+  to, because on a failure there is no resolved base URL to key it under.
+
+      case AccessTokens.token(url) do
+        nil ->
+          case AccessTokens.last_failure(url) do
+            :credential_rejected -> alarm("re-issue the EndPointBlank credential")
+            {:request_rejected, status} -> alarm("intake refused the request: \#{status}")
+            _transient -> :ok
+          end
+
+        token ->
+          {:ok, token}
+      end
+
+  See `t:failure/0` for the shapes and which of them are permanent. Answers
+  `nil` -- never raises -- for a URL nothing was recorded under, including any
+  argument that is not a binary.
+
+  A successful mint clears the record for the URL it was asked about and for
+  every URL the resolved base URL covers, so this cannot go on reporting a
+  failure that has since been fixed.
+  """
+  @spec last_failure(term()) :: failure() | nil
+  def last_failure(base_url) do
+    call({:last_failure, base_url}, nil)
   end
 
   defp call(message, on_failure) do
@@ -89,7 +153,7 @@ defmodule EndPointBlank.AccessTokens do
     GenServer.cast(__MODULE__, {:invalidate, stale_token})
   end
 
-  @doc "Discards every held token."
+  @doc "Discards every held token, and every recorded failure."
   def clear do
     GenServer.cast(__MODULE__, :clear)
   end
@@ -97,7 +161,7 @@ defmodule EndPointBlank.AccessTokens do
   # Callbacks
 
   @impl true
-  def init(_), do: {:ok, %{}}
+  def init(_), do: {:ok, empty_state()}
 
   @impl true
   def handle_call({:token, base_url}, _from, state) do
@@ -108,7 +172,7 @@ defmodule EndPointBlank.AccessTokens do
   @impl true
   def handle_call({:exists, base_url}, _from, state) do
     exists =
-      case match(base_url, state) do
+      case match(base_url, state.tokens) do
         %{expires_at: expires_at} -> usable?(expires_at)
         nil -> false
       end
@@ -117,19 +181,29 @@ defmodule EndPointBlank.AccessTokens do
   end
 
   @impl true
+  def handle_call({:last_failure, base_url}, _from, state) do
+    # Map.get/2 with a non-binary key is simply a miss -- failures are only
+    # ever recorded under binary keys -- so this needs no guard of its own to
+    # keep a host application's stray argument from killing this process.
+    {:reply, Map.get(state.failures, base_url), state}
+  end
+
+  @impl true
   def handle_cast({:invalidate, stale_token}, state) when is_binary(stale_token) do
-    new_state = Map.reject(state, fn {_key, %{token: token}} -> token == stale_token end)
-    {:noreply, new_state}
+    tokens = Map.reject(state.tokens, fn {_key, %{token: token}} -> token == stale_token end)
+    {:noreply, %{state | tokens: tokens}}
   end
 
   def handle_cast({:invalidate, _stale_token}, state), do: {:noreply, state}
 
-  def handle_cast(:clear, _state), do: {:noreply, %{}}
+  def handle_cast(:clear, _state), do: {:noreply, empty_state()}
 
   # Helpers
 
+  defp empty_state, do: %{tokens: %{}, failures: %{}}
+
   defp fetch_or_generate(base_url, state) do
-    case match(base_url, state) do
+    case match(base_url, state.tokens) do
       %{token: token, expires_at: expires_at} ->
         if not_near_expiry?(expires_at),
           do: {token, state},
@@ -140,55 +214,131 @@ defmodule EndPointBlank.AccessTokens do
     end
   end
 
+  defp generate_and_store(base_url, state) do
+    case safe_generate(base_url) do
+      {:ok, payload} ->
+        token = field(payload, "token")
+        key = field(payload, "base_url")
+
+        if usable_string?(token) and usable_string?(key) do
+          store(base_url, key, token, payload, state)
+        else
+          # A 2xx that cannot be cached is a broken intake, and saying so is
+          # not the same as saying the credential was refused. Keeping it a
+          # distinct shape is the point of the whole story.
+          fail(base_url, {:invalid_response, failure_reason(payload)}, state)
+        end
+
+      {:error, reason} ->
+        fail(base_url, reason, state)
+    end
+  end
+
+  defp store(base_url, key, token, payload, state) do
+    entry = %{token: token, expires_at: parse_expiry(field(payload, "expired_at"))}
+
+    # The entry just matched (if any) was found unusable and is what got
+    # minted against. If intake resolved this call to a different
+    # canonical base_url than the one that entry was stored under, that
+    # old key must go -- otherwise it lingers, and being the longer of the
+    # two it keeps winning the longest-match race forever, shadowing the
+    # fresh entry and forcing a mint on every call. The failure branch
+    # below already deletes on this same basis; this makes success agree.
+    tokens =
+      case match_key(base_url, state.tokens) do
+        stale when stale != nil and stale != key -> Map.delete(state.tokens, stale)
+        _ -> state.tokens
+      end
+
+    {token,
+     %{
+       state
+       | tokens: Map.put(tokens, key, entry),
+         failures: clear_failures(state.failures, base_url, key)
+     }}
+  end
+
   # A failed mint must not leave an expiring entry behind claiming to be
   # usable — callers would keep presenting it right up to the 401. Only the
   # entry that covers this URL goes: the longest match is the one just found
   # unusable, so a shorter, still-good entry for a different target survives.
-  defp generate_and_store(base_url, state) do
-    payload = safe_generate(base_url)
-    token = payload && payload["token"]
-    key = payload && payload["base_url"]
+  defp fail(base_url, reason, state) do
+    tokens =
+      case match_key(base_url, state.tokens) do
+        nil -> state.tokens
+        stale -> Map.delete(state.tokens, stale)
+      end
 
-    if is_binary(token) and token != "" and is_binary(key) and key != "" do
-      entry = %{token: token, expires_at: parse_expiry(payload["expired_at"])}
+    log_failure(base_url, reason)
 
-      # The entry just matched (if any) was found unusable and is what got
-      # minted against. If intake resolved this call to a different
-      # canonical base_url than the one that entry was stored under, that
-      # old key must go -- otherwise it lingers, and being the longer of the
-      # two it keeps winning the longest-match race forever, shadowing the
-      # fresh entry and forcing a mint on every call. The failure branch
-      # below already deletes on this same basis; this makes success agree.
-      state =
-        case match_key(base_url, state) do
-          stale when stale != nil and stale != key -> Map.delete(state, stale)
-          _ -> state
-        end
-
-      {token, Map.put(state, key, entry)}
-    else
-      new_state =
-        case match_key(base_url, state) do
-          nil -> state
-          stale -> Map.delete(state, stale)
-        end
-
-      # inspect/1, not string interpolation: base_url is whatever a caller
-      # passed to token/1 or exists?/1, and String.Chars has no
-      # implementation for a map, tuple, PID, function, reference, port, or a
-      # non-codepoint list. Interpolating it directly would raise
-      # Protocol.UndefinedError right here, on the ordinary-miss path this
-      # very branch exists to keep safe -- the crash would just move one line
-      # rather than close. inspect/1 accepts any term.
-      Logger.error(
-        "[EndPointBlank] Failed to generate access token for #{inspect(base_url)}: #{failure_reason(payload)}"
-      )
-
-      {nil, new_state}
-    end
+    {nil, %{state | tokens: tokens, failures: record_failure(state.failures, base_url, reason)}}
   end
 
-  defp failure_reason(nil), do: "no response"
+  # A 401 is not an outage. Logging it as one -- "Failed to generate access
+  # token", which reads as intake being down -- is why nobody notices that a
+  # credential has been revoked until traffic has been falling back to Basic
+  # for a week. This line names the remedy instead.
+  defp log_failure(base_url, :credential_rejected) do
+    Logger.error(
+      "[EndPointBlank] Access token credential was rejected for #{inspect(base_url)}: intake " <>
+        "answered 401. This will NOT recover on its own — the API credential must be re-issued " <>
+        "(check :client_id/:client_secret). Callers fall back to Basic until it is."
+    )
+  end
+
+  defp log_failure(base_url, reason) do
+    # inspect/1, not string interpolation: base_url is whatever a caller
+    # passed to token/1 or exists?/1, and String.Chars has no
+    # implementation for a map, tuple, PID, function, reference, port, or a
+    # non-codepoint list. Interpolating it directly would raise
+    # Protocol.UndefinedError right here, on the ordinary-miss path this
+    # very branch exists to keep safe -- the crash would just move one line
+    # rather than close. inspect/1 accepts any term.
+    Logger.error(
+      "[EndPointBlank] Failed to generate access token for #{inspect(base_url)}: #{describe(reason)}"
+    )
+  end
+
+  defp describe({:request_rejected, status}), do: "intake rejected the request: status=#{status}"
+  defp describe({:server_error, status}), do: "intake failed: status=#{status}"
+  defp describe({:transport_error, reason}), do: "could not reach intake: #{inspect(reason)}"
+  defp describe({:invalid_response, reason}), do: reason
+
+  # Failures are keyed by the URL the caller asked about, because a failed
+  # mint has no resolved base URL to key on. That set is unbounded in
+  # principle -- a caller passing a different resource URL every time would
+  # grow it -- so it is bounded from the other end instead: any success under
+  # a covering base URL drops every record it covers (see clear_failures/3),
+  # and clear/0 drops the lot. Only a binary is recorded; a stray non-binary
+  # argument logs loudly but is not worth a permanent map entry.
+  defp record_failure(failures, base_url, reason) when is_binary(base_url) and base_url != "" do
+    Map.put(failures, base_url, reason)
+  end
+
+  defp record_failure(failures, _base_url, _reason), do: failures
+
+  # A success says every failure it covers is stale: the exact URL that was
+  # asked about, and anything under the base URL intake resolved it to.
+  # Leaving them would let last_failure/1 go on reporting a rejected
+  # credential that has since been re-issued.
+  defp clear_failures(failures, base_url, key) do
+    failures
+    |> Enum.reject(fn {url, _reason} ->
+      url == base_url or url == key or String.starts_with?(url, key <> "/")
+    end)
+    |> Map.new()
+  end
+
+  # Only a map can be a token document. A 2xx whose decoded body is a list, a
+  # string or a number would otherwise reach `body["token"]`, and Access
+  # raises for those -- inside this GenServer, outside safe_generate/1's
+  # rescue. An SDK must not be able to crash the application it is embedded in
+  # because intake is misconfigured.
+  defp field(payload, key) when is_map(payload), do: Map.get(payload, key)
+  defp field(_payload, _key), do: nil
+
+  defp usable_string?(value), do: is_binary(value) and value != ""
+
   defp failure_reason(%{"error" => error}) when is_binary(error), do: error
 
   # intake is expected to send "error" as a string. A misbehaving intake
@@ -229,20 +379,24 @@ defmodule EndPointBlank.AccessTokens do
   # Minting runs inside this GenServer, so anything it raises would kill the
   # process — and enough restarts take the SDK's whole supervision tree, and
   # with it the host application's, down with it. `GenerateAccessToken` already
-  # turns a refusal or a transport error into `nil`; this is for what it cannot
-  # anticipate, such as a malformed access-token URL built from bad config.
-  # An SDK must not be able to crash the application it is embedded in because
-  # intake is misconfigured.
+  # turns a refusal or a transport error into an `{:error, reason}`; this is
+  # for what it cannot anticipate, such as a malformed access-token URL built
+  # from bad config. An SDK must not be able to crash the application it is
+  # embedded in because intake is misconfigured.
+  #
+  # It maps to a transport error, never to `:credential_rejected`: a raise
+  # says nothing whatever about the credential, and calling it permanent
+  # would tell every caller to stop retrying a bug in this SDK.
   defp safe_generate(base_url) do
-    EndPointBlank.Commands.GenerateAccessToken.generate(base_url)
+    GenerateAccessToken.generate_result(base_url)
   rescue
     error ->
       Logger.error("[EndPointBlank] Minting an access token raised: #{Exception.message(error)}")
-      nil
+      {:error, {:transport_error, error}}
   catch
     kind, reason ->
       Logger.error("[EndPointBlank] Minting an access token #{kind}: #{inspect(reason)}")
-      nil
+      {:error, {:transport_error, {kind, reason}}}
   end
 
   defp not_near_expiry?(expires_at) do

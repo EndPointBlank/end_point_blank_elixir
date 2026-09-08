@@ -104,4 +104,138 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
 
     assert log =~ "GenerateAccessToken error"
   end
+
+  describe "generate_result/1" do
+    # intake now answers 401 for a rejected credential and something else for
+    # everything else, so the status carries actionable meaning: 401 means stop
+    # and re-issue the credential, anything else means the failure may well be
+    # gone on the next call. `generate/1` flattens every one of those to `nil`,
+    # so a caller holding its return value cannot tell them apart. This is the
+    # entry point that keeps the distinction.
+
+    test "returns the parsed document on success" do
+      stub(fn conn ->
+        conn
+        |> Plug.Conn.put_status(201)
+        |> Req.Test.json(%{"token" => "abc", "expired_at" => "2030-01-01T00:00:00Z"})
+      end)
+
+      assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+               {:ok, %{"token" => "abc", "expired_at" => "2030-01-01T00:00:00Z"}}
+    end
+
+    test "returns :credential_rejected on 401" do
+      # The one permanent failure: the credential itself was refused, and it
+      # will go on being refused until a human re-issues it. Retrying is not
+      # just useless, it is a login-failure storm against intake.
+      stub(fn conn ->
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "nope"})
+      end)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, :credential_rejected}
+        end)
+
+      # The pre-existing log line is unchanged; nothing about the old
+      # observable behaviour is dropped in favour of the new return value.
+      assert log =~ "GenerateAccessToken failed"
+      assert log =~ "401"
+    end
+
+    test "returns {:request_rejected, status} for any other 4xx" do
+      # intake's access-token controller answers 400 for an invalid token_ttl
+      # or a missing base_url, and 422 for "Missing target application",
+      # "Missing source application" or "Failed to create access token".
+      # Every one of those is as permanent as a 401 -- retrying is futile --
+      # but the remedy is registering the environment or fixing the request,
+      # not re-issuing the credential. Filing them under `server_error` would
+      # tell a caller to retry something that can never succeed.
+      for status <- [400, 403, 404, 422, 429] do
+        stub(fn conn -> conn |> Plug.Conn.put_status(status) |> Req.Test.json(%{}) end)
+
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, {:request_rejected, status}}
+        end)
+      end
+    end
+
+    test "returns {:server_error, status} for a 5xx" do
+      # The transient bucket: intake fell over, and the identical call may
+      # well succeed on the next attempt.
+      for status <- [500, 502, 503] do
+        stub(fn conn -> conn |> Plug.Conn.put_status(status) |> Req.Test.json(%{}) end)
+
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, {:server_error, status}}
+        end)
+      end
+    end
+
+    test "files an unexpected non-2xx, non-4xx, non-5xx status under server_error" do
+      # A 3xx that Req did not follow is a broken server, not a rejected
+      # request. It must land somewhere explicit rather than falling through
+      # a clause that does not exist.
+      stub(fn conn -> conn |> Plug.Conn.put_status(199) |> Req.Test.json(%{}) end)
+
+      capture_log(fn ->
+        assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                 {:error, {:server_error, 199}}
+      end)
+    end
+
+    test "returns {:transport_error, reason} when intake cannot be reached" do
+      stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:transport_error, %Req.TransportError{reason: :econnrefused}}} =
+                   GenerateAccessToken.generate_result("https://api.example.com/orders")
+        end)
+
+      assert log =~ "GenerateAccessToken error"
+    end
+  end
+
+  describe "generate/1 legacy contract" do
+    # These are published-library return values. `generate/1` keeps answering
+    # exactly what it answered before -- payload-or-nil -- and the status-aware
+    # answer arrives alongside it rather than in place of it.
+
+    test "still returns the payload on success and nil on every failure" do
+      stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
+      assert GenerateAccessToken.generate("https://api.example.com/orders") == %{"token" => "abc"}
+
+      for status <- [401, 400, 403, 422, 500] do
+        stub(fn conn -> conn |> Plug.Conn.put_status(status) |> Req.Test.json(%{}) end)
+
+        capture_log(fn ->
+          assert GenerateAccessToken.generate("https://api.example.com/orders") == nil
+        end)
+      end
+
+      stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
+
+      capture_log(fn ->
+        assert GenerateAccessToken.generate("https://api.example.com/orders") == nil
+      end)
+    end
+
+    test "logs exactly what it logged before on a 401" do
+      # A 401 used to be indistinguishable from a 500 here, and at this layer
+      # it still is: the extra loudness belongs to AccessTokens, which knows
+      # the failure is about to cost callers their tokens.
+      stub(fn conn -> conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{}) end)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate("https://api.example.com/orders") == nil
+        end)
+
+      assert log =~ "[EndPointBlank] GenerateAccessToken failed: status=401"
+    end
+  end
 end

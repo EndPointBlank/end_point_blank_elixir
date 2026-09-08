@@ -242,6 +242,34 @@ URL you passed — so a service that calls several targets holds a token for
 each. Called with no argument (or `nil`), `header/1` always returns the Basic
 form; that is what every call this SDK makes to intake itself uses.
 
+#### Finding out why a token could not be minted
+
+`AccessTokens.token/1` answers `nil` for every failure, and `header/1` falls
+back to Basic — deliberately, so an intake outage costs a fallback rather than
+the request. But not every failure is an outage: intake answers **401** when
+the API credential itself has been rejected, and that is permanent until
+someone re-issues it. `AccessTokens.last_failure/1` reports the last failure
+for a URL so a caller can tell them apart and alarm on the one that will not
+fix itself:
+
+```elixir
+case EndPointBlank.AccessTokens.last_failure("https://api.example.com/orders") do
+  nil -> :ok
+  # Permanent — retrying changes nothing.
+  :credential_rejected -> alarm("re-issue the EndPointBlank credential")
+  {:request_rejected, status} -> alarm("intake refused the request: #{status}")
+  # Transient — worth trying again.
+  {:server_error, _status} -> :ok
+  {:transport_error, _reason} -> :ok
+  {:invalid_response, _reason} -> :ok
+end
+```
+
+A successful mint clears the record. `EndPointBlank.Commands.GenerateAccessToken.generate_result/1`
+is the same distinction one layer down, for callers that mint directly:
+`{:ok, payload}` or `{:error, reason}` with the same reasons.
+`generate/1` still answers payload-or-`nil` and is unchanged.
+
 ### Request/response/log reporting
 
 `EndPointBlank.Plug.ReportInteraction` reports every request/response pair

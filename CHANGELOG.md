@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `EndPointBlank.Commands.GenerateAccessToken.generate_result/1`, returning
+  `{:ok, payload}` or `{:error, reason}` so a caller can tell a rejected
+  credential from a failed intake. Reasons are `:credential_rejected` (401 —
+  permanent until the credential is re-issued), `{:request_rejected, status}`
+  (any other 4xx — also permanent, but the remedy is the request or the
+  registration), `{:server_error, status}` (5xx) and
+  `{:transport_error, reason}` (both transient).
+- `EndPointBlank.AccessTokens.last_failure/1`, reporting the last failure
+  recorded for a URL — the same reasons plus `{:invalid_response, reason}` for
+  a 2xx this cache cannot store. A successful mint clears the record.
+- A distinct, loud log line when intake rejects the credential, instead of the
+  generic "Failed to generate access token" that reads as an outage.
+
+### Changed
+
+- Nothing removed or renamed. `GenerateAccessToken.generate/1`,
+  `AccessTokens.token/1` and `AccessTokens.exists?/1` keep their exact return
+  contracts (payload-or-`nil`, token-or-`nil`, boolean) and their existing log
+  lines; `generate/1` is now a thin wrapper over `generate_result/1`.
+
 ## 0.6.0
 
 ### Breaking

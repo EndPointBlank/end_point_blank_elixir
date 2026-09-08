@@ -59,7 +59,11 @@ defmodule EndPointBlank.AccessTokensTest do
 
       conn
       |> Plug.Conn.put_status(201)
-      |> Req.Test.json(%{"token" => "token-#{n}", "expired_at" => expires_at, "base_url" => resolved})
+      |> Req.Test.json(%{
+        "token" => "token-#{n}",
+        "expired_at" => expires_at,
+        "base_url" => resolved
+      })
     end)
   end
 
@@ -434,9 +438,15 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.token(base) == "token-1"
     end
 
-    test "a live token is served without minting, so a refused deeper path cannot disturb it", %{
+    test "a live token is served without minting, so a failed deeper mint cannot disturb it", %{
       base_url: base
     } do
+      # The 422 below is only standing in for "any non-success" -- it is this
+      # test's transport stub, not a claim about what intake answers for a
+      # given condition. intake answers 401 for a rejected credential
+      # specifically; a 422 there means it could not resolve the application.
+      # Nothing here turns on which one it is: the assertion is that a live
+      # entry is served without a mint at all.
       stub_minting()
       assert AccessTokens.token(base) == "token-1"
 
@@ -453,6 +463,11 @@ defmodule EndPointBlank.AccessTokensTest do
       # left behind is always close to death. Keeping it means exists?/1 -- whose
       # floor is 30 seconds -- goes on calling it usable, and a caller acting on
       # that presents a credential intake is about to reject.
+      # 422 stands in for "the mint did not succeed", nothing more. Eviction
+      # is the same for every failure kind -- a 401, a 500 and a refused
+      # connection all leave the same unusable entry behind -- so this
+      # deliberately does not depend on the status. (intake answers 401, not
+      # 422, when it rejects a credential; see the last_failure/1 tests.)
       stub_minting(ttl_seconds: 60)
       assert AccessTokens.token(base) == "token-1"
 
@@ -474,6 +489,9 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.token(base) == "token-1"
       assert AccessTokens.token(other) == "token-2"
 
+      # Again a generic non-success, not a statement about what a 422 means to
+      # intake. Which status came back changes what last_failure/1 reports; it
+      # does not change which entries get evicted, which is what is under test.
       Req.Test.stub(__MODULE__.Stub, fn conn ->
         conn |> Plug.Conn.put_status(422) |> Req.Test.json(%{"error" => "revoked"})
       end)
@@ -674,9 +692,9 @@ defmodule EndPointBlank.AccessTokensTest do
       stub_sequence([token_payload("broad-token", base_url: base, ttl_seconds: 3600)])
       assert AccessTokens.token(narrow) == "broad-token"
 
-      state = :sys.get_state(AccessTokens)
-      refute Map.has_key?(state, narrow)
-      assert Map.has_key?(state, base)
+      %{tokens: tokens} = :sys.get_state(AccessTokens)
+      refute Map.has_key?(tokens, narrow)
+      assert Map.has_key?(tokens, base)
 
       # The sharpest check: a follow-up call for the same URL must be served
       # from the fresh `base` entry, not mint again because the stale, still
@@ -687,6 +705,243 @@ defmodule EndPointBlank.AccessTokensTest do
       stub_minting()
       assert AccessTokens.token(narrow) == "broad-token"
       assert mint_count() == 2
+    end
+  end
+
+  describe "last_failure/1" do
+    # intake answers 401 for a credential it has rejected and something else
+    # for everything else, and that distinction is the only thing telling a
+    # caller whether to try again. `token/1` returns `nil` for all of them, so
+    # the status has to be readable somewhere else -- this is that somewhere.
+
+    test "is nil before anything has been asked for", %{base_url: base} do
+      assert AccessTokens.last_failure(base) == nil
+    end
+
+    test "is nil after a successful mint", %{base_url: base} do
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      assert AccessTokens.last_failure(base) == nil
+    end
+
+    test "records :credential_rejected on a 401, with a log that says so", %{base_url: base} do
+      # The whole point of the story. A 401 is permanent until a human
+      # re-issues the credential, so the generic "Failed to generate access
+      # token" line -- which a reader takes for an outage -- is the wrong
+      # thing to print and the wrong thing to hand back.
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "invalid credentials"})
+      end)
+
+      log = capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+      assert AccessTokens.last_failure(base) == :credential_rejected
+      assert log =~ "credential was rejected"
+      assert log =~ "re-issue"
+      # Distinct from the generic failure line, not in addition to it.
+      refute log =~ "Failed to generate access token"
+    end
+
+    test "records {:request_rejected, status} for any other 4xx", %{base_url: base} do
+      # intake answers 400 for an invalid token_ttl or a missing base_url and
+      # 422 for an unregistered application. Permanent like a 401, but the
+      # credential is not what needs fixing.
+      for status <- [400, 422] do
+        AccessTokens.clear()
+
+        Req.Test.stub(__MODULE__.Stub, fn conn ->
+          conn |> Plug.Conn.put_status(status) |> Req.Test.json(%{"error" => "nope"})
+        end)
+
+        log = capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+        assert AccessTokens.last_failure(base) == {:request_rejected, status}
+        assert log =~ "Failed to generate access token"
+        refute log =~ "credential was rejected"
+      end
+    end
+
+    test "records {:server_error, status} on a 5xx", %{base_url: base} do
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => "down"})
+      end)
+
+      log = capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+      assert AccessTokens.last_failure(base) == {:server_error, 500}
+      assert log =~ "Failed to generate access token"
+      refute log =~ "credential was rejected"
+    end
+
+    test "records {:transport_error, reason} when intake cannot be reached", %{base_url: base} do
+      Req.Test.stub(__MODULE__.Stub, fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
+
+      capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+      assert {:transport_error, _reason} = AccessTokens.last_failure(base)
+    end
+
+    test "records a transient failure -- never :credential_rejected -- when minting raises",
+         %{base_url: base} do
+      # `safe_generate/1`'s rescue exists so a misconfiguration cannot restart
+      # this GenServer. What it must not do is quietly become the permanent
+      # outcome: a raise says nothing at all about the credential, and calling
+      # it :credential_rejected would tell a caller to stop retrying a bug.
+      Req.Test.stub(__MODULE__.Stub, fn _conn -> raise "intake exploded" end)
+
+      pid = Process.whereis(AccessTokens)
+      capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+      assert {:transport_error, _reason} = AccessTokens.last_failure(base)
+      refute AccessTokens.last_failure(base) == :credential_rejected
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
+    end
+
+    test "records a transient failure when minting throws", %{base_url: base} do
+      # The catch clause, one step over from the rescue: same requirement.
+      Req.Test.stub(__MODULE__.Stub, fn _conn -> throw(:boom) end)
+
+      pid = Process.whereis(AccessTokens)
+      capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+      assert {:transport_error, _reason} = AccessTokens.last_failure(base)
+      assert Process.whereis(AccessTokens) == pid
+    end
+
+    test "records an invalid response distinctly from a rejected credential", %{base_url: base} do
+      # A 201 carrying no base_url is a broken server. It is not the
+      # credential, and it is not a status code either -- it needs its own
+      # answer rather than being folded into one of the others.
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "tok-1"})
+      end)
+
+      capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+      assert {:invalid_response, reason} = AccessTokens.last_failure(base)
+      assert reason =~ "carried a token but no base_url"
+    end
+
+    test "reports the error string intake sent with an uncacheable 2xx", %{base_url: base} do
+      # A 200 carrying `{"error": "..."}` and no token. Still not the
+      # credential -- intake says 401 for that -- so it stays an invalid
+      # response, but the reason it gave is what gets carried back.
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(200) |> Req.Test.json(%{"error" => "environment is paused"})
+      end)
+
+      log = capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+      assert AccessTokens.last_failure(base) == {:invalid_response, "environment is paused"}
+      assert log =~ "environment is paused"
+    end
+
+    test "survives a 2xx whose body is not a map at all", %{base_url: base} do
+      # Nothing guarantees intake's 2xx body decodes to a map. A list reaches
+      # `body["token"]`, and Access raises for a list with a binary key --
+      # inside this GenServer, past the point safe_generate/1's rescue covers.
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      pid = Process.whereis(AccessTokens)
+
+      other = "https://other-" <> String.trim_leading(base, "https://")
+
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(200) |> Req.Test.json(["not", "a", "map"])
+      end)
+
+      capture_log(fn -> assert AccessTokens.token(other) == nil end)
+
+      assert AccessTokens.last_failure(other) == {:invalid_response, "no token in response"}
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
+      assert AccessTokens.token(base) == "token-1"
+    end
+
+    test "a successful mint clears an earlier failure", %{base_url: base} do
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "invalid credentials"})
+      end)
+
+      capture_log(fn -> assert AccessTokens.token(base) == nil end)
+      assert AccessTokens.last_failure(base) == :credential_rejected
+
+      # The credential was re-issued. Nothing about the cache should still be
+      # telling a caller to give up.
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      assert AccessTokens.last_failure(base) == nil
+    end
+
+    test "a success under a covering base clears failures recorded for deeper paths",
+         %{base_url: base} do
+      # Failures are keyed by the URL the caller asked about, which is
+      # unbounded in principle. A success for the environment covering those
+      # URLs is the signal that every one of them is stale.
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(500) |> Req.Test.json(%{"error" => "down"})
+      end)
+
+      capture_log(fn ->
+        assert AccessTokens.token(base <> "/orders/1") == nil
+        assert AccessTokens.token(base <> "/orders/2") == nil
+      end)
+
+      assert AccessTokens.last_failure(base <> "/orders/1") == {:server_error, 500}
+
+      stub_sequence([token_payload("broad-token", base_url: base)])
+      assert AccessTokens.token(base <> "/orders/3") == "broad-token"
+
+      assert AccessTokens.last_failure(base <> "/orders/1") == nil
+      assert AccessTokens.last_failure(base <> "/orders/2") == nil
+      assert AccessTokens.last_failure(base <> "/orders/3") == nil
+    end
+
+    test "a failure for one base url is not reported for another", %{base_url: base} do
+      other = "https://other-" <> String.trim_leading(base, "https://")
+
+      stub_minting()
+      assert AccessTokens.token(other) == "token-1"
+
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "nope"})
+      end)
+
+      capture_log(fn -> assert AccessTokens.token(base) == nil end)
+
+      assert AccessTokens.last_failure(base) == :credential_rejected
+      assert AccessTokens.last_failure(other) == nil
+    end
+
+    test "clear/0 discards recorded failures along with the tokens", %{base_url: base} do
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "nope"})
+      end)
+
+      capture_log(fn -> assert AccessTokens.token(base) == nil end)
+      assert AccessTokens.last_failure(base) == :credential_rejected
+
+      AccessTokens.clear()
+      assert AccessTokens.last_failure(base) == nil
+    end
+
+    test "answers nil for a non-binary base_url without crashing the GenServer",
+         %{base_url: base} do
+      # `last_failure/1` is public API reached through the same timeout-safe
+      # `call/2` helper as `token/1` and `exists?/1`, so it inherits the same
+      # requirement: a host application can pass anything, and nothing it
+      # passes may take this process down.
+      stub_minting()
+      assert AccessTokens.token(base) == "token-1"
+      pid = Process.whereis(AccessTokens)
+
+      for bad <- [nil, "", 123, :not_a_url, %{}, {1, 2}] do
+        assert AccessTokens.last_failure(bad) == nil
+      end
+
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
     end
   end
 end
