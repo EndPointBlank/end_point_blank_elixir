@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `EndPointBlank.Commands.GenerateAccessToken.generate_result/1`, returning
+  `{:ok, payload}` or `{:error, reason}` so a caller can tell a rejected
+  credential from a failed intake. Reasons are `:credential_rejected` (401 —
+  permanent until the credential is re-issued), `{:request_rejected, status}`
+  (any other 4xx — also permanent, but the remedy is the request or the
+  registration), `{:server_error, status}` (5xx) and
+  `{:transport_error, reason}` (both transient).
+  `{:server_error, status}` also covers a 2xx the SDK cannot read an access
+  token out of, carrying the real 2xx status.
+- `EndPointBlank.AccessTokens.last_failure/1`, reporting the last failure
+  recorded for a URL, using exactly those reasons. A successful mint clears
+  the record, and only the 64 most recently failed URLs are kept so a revoked
+  credential — which fails every mint forever — cannot grow the map without
+  bound.
+- A distinct, loud log line when intake rejects the credential, instead of the
+  generic "Failed to generate access token" that reads as an outage.
+
+### Changed
+
+- Nothing removed or renamed. `GenerateAccessToken.generate/1`,
+  `AccessTokens.token/1` and `AccessTokens.exists?/1` keep their exact return
+  contracts (payload-or-`nil`, token-or-`nil`, boolean) and their existing log
+  lines; `generate/1` is now a thin wrapper over `generate_result/1`.
+- `generate/1` now returns `nil`, rather than the raw body, for a 2xx it
+  cannot read an access token out of — an undecodable body, one that is not a
+  JSON object, or one carrying no `token` or no `base_url`. Its documented
+  contract already called that a failure, and a healthy intake never sends
+  one, but it is a behaviour change at the edge.
+
 ## 0.6.0
 
 ### Breaking
