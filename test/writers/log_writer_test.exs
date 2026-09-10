@@ -90,10 +90,31 @@ defmodule EndPointBlank.Writers.LogWriterTest do
   end
 
   test "runs the user's mask hook over the entry before sending" do
+    # Pins masking of a pre-merge field: `message` is built into the payload
+    # before the stamped_path/stamped_http_method merge, so it must reach the
+    # hook regardless of merge order.
     Config.update(mask_hook: fn payload, _type -> Map.put(payload, :message, "[masked]") end)
 
     LogWriter.info("secret value")
 
     assert written().payload["message"] == "[masked]"
+  end
+
+  test "the mask hook can see and redact the merged stamped_path (sc-382)" do
+    # Request paths carry identifiers routinely (`/patients/1234/notes`).
+    # Elixir used to mask, then merge stamped_path/stamped_http_method in
+    # unconditionally afterward, so a hook could never see or redact them —
+    # unlike the JS and Rails SDKs, which merge first. This pins the fixed
+    # order: the merge happens before masking, so the hook receives the
+    # merged fields and can act on them.
+    RequestStore.put_conn(Plug.Test.conn("GET", "/patients/1234/notes"))
+
+    Config.update(
+      mask_hook: fn payload, _type -> Map.put(payload, :stamped_path, "[redacted]") end
+    )
+
+    LogWriter.info("hello")
+
+    assert written().payload["stamped_path"] == "[redacted]"
   end
 end

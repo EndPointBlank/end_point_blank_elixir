@@ -107,6 +107,9 @@ defmodule EndPointBlank.Writers.ExceptionWriterTest do
 
   test "masks the message when a rule targets it" do
     # Exception messages routinely interpolate the value that caused them.
+    # This is a pre-merge field: it is built into the payload before the
+    # stamped_path/stamped_http_method merge, so it must be masked regardless
+    # of merge order.
     Config.update(
       masking_rules: [
         %{target: "error_message", path: nil, regex: "\\d{4,}", replacement_value: "[redacted]"}
@@ -116,5 +119,23 @@ defmodule EndPointBlank.Writers.ExceptionWriterTest do
     ExceptionWriter.write(%RuntimeError{message: "card 4111111111111111 rejected"})
 
     assert written().payload["message"] == "card [redacted] rejected"
+  end
+
+  test "the mask hook can see and redact the merged stamped_path (sc-382)" do
+    # Request paths carry identifiers routinely (`/patients/1234/notes`).
+    # Elixir used to mask, then merge stamped_path/stamped_http_method in
+    # unconditionally afterward, so a hook could never see or redact them —
+    # unlike the JS and Rails SDKs, which merge first. This pins the fixed
+    # order: the merge happens before masking, so the hook receives the
+    # merged fields and can act on them.
+    RequestStore.put_conn(Plug.Test.conn("DELETE", "/patients/1234/notes"))
+
+    Config.update(
+      mask_hook: fn payload, _type -> Map.put(payload, :stamped_path, "[redacted]") end
+    )
+
+    ExceptionWriter.write(%RuntimeError{message: "bare"})
+
+    assert written().payload["stamped_path"] == "[redacted]"
   end
 end

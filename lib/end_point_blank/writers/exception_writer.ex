@@ -16,8 +16,11 @@ defmodule EndPointBlank.Writers.ExceptionWriter do
       source_application_environment_id: RequestStore.get_source_env_id()
     }
 
-    payload = Masking.apply(payload, :error, Config.masking_rules(), Config.mask_hook())
-
+    # Merge stamped_path/stamped_http_method BEFORE masking, matching the JS
+    # and Rails SDKs (sc-382): anything merged in after masking has, by
+    # construction, never been offered to the rules or the hook, so masking
+    # first would let a sensitive path segment (e.g. `/patients/1234/notes`)
+    # reach intake unmasked. Merging first means the hook sees it.
     payload =
       case RequestStore.get_conn() do
         %Plug.Conn{} = conn ->
@@ -25,6 +28,8 @@ defmodule EndPointBlank.Writers.ExceptionWriter do
         _ ->
           payload
       end
+
+    payload = Masking.apply(payload, :error, Config.masking_rules(), Config.mask_hook())
 
     Writers.write(:errors, config.log_mode, [payload])
   end
