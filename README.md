@@ -96,7 +96,7 @@ env var > built-in default**.
 | Access-token TTL in seconds (sent to `GenerateAccessToken`) | `:token_ttl` | — (`configure/1` only) | `nil` |
 | Post-rule masking hook, `fn payload, record_type -> payload end` | `:mask_hook` | — (`configure/1` only) | `nil` |
 | Write mode: `:direct` (synchronous HTTP per payload) or `:delayed` (batched background queue) | `:log_mode` | — (`configure/1` only) | `:direct` |
-| Reserved for future writer pooling; not currently read by any writer | `:worker_count` | — (`configure/1` only) | `4` |
+| Max concurrent writes `EndPointBlank.Writers.DelayedWriter` performs per flush | `:worker_count` | — (`configure/1` only) | `4` |
 | Authorization-cache TTL in seconds (`EndPointBlank.AuthCache`) | `:cache_ttl` | — (`configure/1` only) | `300` |
 | Whether the per-request `scheme`/`host`/`port` report honors `x-forwarded-proto`/`-host`/`-port` (see [Reported base URL](#reported-base-url)) | `:trust_proxy_headers` | — (`configure/1` only) | `true` |
 | Ordered list of masking rule maps (see [Data masking](#data-masking)) | `:masking_rules` | — (`configure/1` only) | `[]` |
@@ -323,10 +323,18 @@ All four writers (`RequestWriter`, `ResponseWriter`, `ExceptionWriter`,
 
 - `:direct` (default) — sends synchronously via `EndPointBlank.Writers.DirectWriter`.
 - `:delayed` — enqueues onto `EndPointBlank.Writers.DelayedWriter`, a
-  `GenServer` that batches up to 4 payloads per flush every 100 ms, per
-  endpoint key. Each key's queue is capped at 1,000 payloads; under a
+  `GenServer` that batches up to 4 payloads per flush, per endpoint key, and
+  flushes once a second. Each key's queue is capped at 1,000 payloads; under a
   sustained intake outage the oldest payloads for that key are dropped (and a
   warning logged) rather than growing memory unbounded.
+
+  A batch that fails costs that batch and nothing more. Every way a flush can
+  fail — a raise anywhere under `DirectWriter.write/2`, or a `GenServer.call`
+  timeout that exits its caller — is caught, logged at `error` level once per
+  failing flush (with a running count of consecutive failures), and backed off:
+  the flush interval doubles from 1 s up to a 30 s ceiling while failures
+  continue, and resets on the first clean flush. Telemetry delivery can degrade;
+  it cannot take your application's supervision tree with it.
 
 All outbound HTTP goes through `EndPointBlank.Http.post/3`, which retries up
 to 3 times (200 ms apart) on network error, with a 3 s connect timeout and a
