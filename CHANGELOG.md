@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`EndPointBlank.Writers.DelayedWriter` can no longer take the host
+  application down.** It ran `Task.async_stream/3` inside its own
+  `handle_info/2`, and those tasks are linked to the caller — so any raise or
+  exit in any batch sent an exit signal to the writer itself. At the old 100 ms
+  flush cadence a persistent fault restarted it about ten times a second,
+  exceeding the supervisor's default intensity (3 restarts in 5 seconds) in
+  well under a second; under `start_permanent: true` (a `:prod` release) that
+  terminates the application and halts the node. A fire-and-forget telemetry
+  writer could stop the service it was reporting on.
+
+  A batch now fails inside its own task, where it is caught and cannot become a
+  signal. The flush callback separately guards what it evaluates itself, which
+  includes `EndPointBlank.Config.worker_count/0` — an `Agent.get/2` whose
+  5000 ms default timeout exits *its caller*, and which runs in the writer
+  process before any task is spawned, so an idle writer with an empty queue was
+  just as exposed as a busy one.
+
+  Deliberately still fatal: an exit signal delivered to a write task from
+  outside it (`Process.exit(task, :kill)`, a `max_heap_size` breach, a
+  `:brutal_kill` shutdown). Those are untrappable, and mean something outside
+  this library is tearing processes down on purpose. A test pins that boundary.
+
 ### Added
 
 - `EndPointBlank.Commands.GenerateAccessToken.generate_result/1`, returning
@@ -23,6 +47,25 @@
 
 ### Changed
 
+- **The `:delayed` flush interval is now 1 second, was 100 ms.** A 100 ms
+  window batched almost nothing at any realistic payload rate, cost ten
+  wakeups (and ten `Agent.get/2` round trips to the Config agent) per second in
+  every host app whether or not anything was queued, and was the multiplier
+  that turned a recoverable fault into a restart storm. Delivery of telemetry
+  nobody is waiting on is up to 900 ms later; nothing else changes.
+- A flush that fails is logged once, at `error` level, naming the exception,
+  the number of consecutive failing flushes, how many batches and payloads went
+  with it, the retry interval and the failing stack frame. Consecutive failures
+  back the flush interval off exponentially — 1 s doubling to a 30 s ceiling —
+  and the first clean flush resets it. A non-2xx or an exhausted transport
+  retry is *not* counted: `DirectWriter` already reports those, and they are an
+  expected outcome of talking to a network rather than a defect.
+- A flush with nothing queued now returns before consulting
+  `EndPointBlank.Config`, so an idle host app makes no `Agent.get/2` calls on
+  the writer's behalf at all.
+- `:worker_count` was documented in the README as "reserved for future writer
+  pooling; not currently read by any writer". It has been the delayed writer's
+  `max_concurrency` for some time; the table now says so.
 - Nothing removed or renamed. `GenerateAccessToken.generate/1`,
   `AccessTokens.token/1` and `AccessTokens.exists?/1` keep their exact return
   contracts (payload-or-`nil`, token-or-`nil`, boolean) and their existing log
