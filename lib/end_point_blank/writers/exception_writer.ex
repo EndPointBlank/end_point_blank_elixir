@@ -9,7 +9,7 @@ defmodule EndPointBlank.Writers.ExceptionWriter do
 
     payload = %{
       app_name: config.app_name,
-      uuid: RequestStore.get_uuid(),
+      uuid: RequestStore.get_uuid() || RequestStore.generate_uuid(),
       message: Exception.message(exception),
       stacktrace: Enum.map(stacktrace, &Exception.format_stacktrace_entry/1),
       sent_at: DateTime.utc_now() |> DateTime.to_iso8601(),
