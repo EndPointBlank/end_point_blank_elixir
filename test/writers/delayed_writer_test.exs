@@ -242,19 +242,24 @@ defmodule EndPointBlank.Writers.DelayedWriterTest do
       end)
     end
 
-    # Removes the Config agent's registered name without touching the agent
-    # process, which is exactly what a caller sees while the agent is wedged,
-    # overloaded or between restarts: a real `Agent.get/2` that exits.
-    defp with_config_unreachable(fun) do
-      config = Process.whereis(Config)
-      Process.unregister(Config)
+    # Takes the config store down for real, through the library's own
+    # supervisor: terminating that child destroys the ETS table it owns, which
+    # is what a reader sees while the config process is down or between
+    # restarts. `terminate_child/2` returns only once the child is dead, so the
+    # window is deterministic rather than raced.
+    #
+    # This used to unregister the Agent's *name* instead, because the read was
+    # an `Agent.get/2` and a missing name was enough to make it exit. Since
+    # sc-350 the read goes to a named table rather than to the process, so
+    # unregistering the name breaks nothing at all — a test written that way
+    # would now pass while proving nothing.
+    defp with_config_store_down(fun) do
+      :ok = Supervisor.terminate_child(EndPointBlank.Supervisor, Config)
 
       try do
         fun.()
       after
-        if is_nil(Process.whereis(Config)) and Process.alive?(config) do
-          Process.register(config, Config)
-        end
+        {:ok, _pid} = Supervisor.restart_child(EndPointBlank.Supervisor, Config)
       end
     end
 
@@ -317,39 +322,48 @@ defmodule EndPointBlank.Writers.DelayedWriterTest do
       assert log =~ "timeout"
     end
 
-    test "a Config agent that is not answering costs the flush, not the writer" do
+    test "a config store that is down costs the flush, not the writer" do
       # `Config.worker_count/0` is an argument to Task.async_stream/3, so it is
       # evaluated in the writer process before a single task exists. Nothing
-      # inside a task can guard it, and before this change it killed the writer
-      # with no batch having failed at all.
+      # inside a task can guard it, and before sc-331 it killed the writer with
+      # no batch having failed at all.
+      #
+      # sc-350 changed what that failure is, not who dies for it. The read was
+      # an `Agent.get/2` that exited its caller after five seconds; it is now an
+      # ETS lookup that raises at once when the store is gone. The flush guard
+      # catches all three kinds, so it still covers this — and this test still
+      # fails without it.
       Process.flag(:trap_exit, true)
       {sup, name, writer} = start_supervised_writer()
       enqueue(name, :errors, 4)
 
       {result, log} =
         with_log(fn ->
-          with_config_unreachable(fn -> flush_and_wait(name) end)
+          with_config_store_down(fn -> flush_and_wait(name) end)
         end)
 
       assert result == :ok, "the writer died evaluating Config.worker_count/0"
       assert Process.alive?(writer)
       assert Process.whereis(name) == writer
       assert Process.alive?(sup)
-      assert log =~ "recovered from (exit)"
-      assert log =~ "no process"
+
+      # The failure is the loud one, named in full: a raise about the config
+      # store, not a five-second exit and not a silently defaulted worker count.
+      assert log =~ "recovered from (RuntimeError)"
+      assert log =~ "EndPointBlank.Config is unavailable"
+      assert log =~ "the tick was lost before any batch was sent"
     end
 
     test "an idle flush does not reach for Config at all" do
       # With nothing queued there is nothing to send, so the writer must not
-      # make the Agent.get/2 round trip that Config.worker_count/0 is. An
-      # unreachable Config proves it: were the call still made, the guard would
-      # catch the exit and say so.
+      # read config at all. A downed store proves it: were the read still made,
+      # the guard would catch the raise and say so.
       Process.flag(:trap_exit, true)
       {_sup, name, writer} = start_supervised_writer()
 
       {result, log} =
         with_log(fn ->
-          with_config_unreachable(fn -> flush_and_wait(name) end)
+          with_config_store_down(fn -> flush_and_wait(name) end)
         end)
 
       assert result == :ok
