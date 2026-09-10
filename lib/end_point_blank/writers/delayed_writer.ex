@@ -23,8 +23,8 @@ defmodule EndPointBlank.Writers.DelayedWriter do
       batch's failure can be stopped — see the note there for why a `try`
       around `Task.async_stream/3` cannot do it;
     * the flush callback guards what it evaluates itself, which includes
-      `EndPointBlank.Config.worker_count/0` — an `Agent.get/2` whose 5000 ms
-      default timeout exits *this* process, not a task;
+      `EndPointBlank.Config.worker_count/0` — a config read that fails in
+      *this* process, not in a task, when the config store is unavailable;
     * a recovered failure is logged loudly, once per failing tick, and the
       tick interval backs off exponentially while failures continue, so a
       persistent fault reads as one escalating line rather than a hot loop.
@@ -45,10 +45,11 @@ defmodule EndPointBlank.Writers.DelayedWriter do
   # a 100 ms window holds a handful of payloads, so the @batch_size chunking
   # barely engages) and cost a great deal: ten wakeups per second forever in
   # every host app, ten `Agent.get/2` round trips per second to the Config
-  # agent, and — before this module guarded anything — up to ten crash-and-
-  # restart cycles per second against a supervisor whose default intensity is
-  # three restarts in five seconds. A second is still well inside "delayed"
-  # for telemetry nobody is waiting on, and it makes a batch a batch.
+  # agent (until sc-350 made that read a lock-free ETS lookup), and — before
+  # this module guarded anything — up to ten crash-and-restart cycles per
+  # second against a supervisor whose default intensity is three restarts in
+  # five seconds. A second is still well inside "delayed" for telemetry nobody
+  # is waiting on, and it makes a batch a batch.
   @flush_ms 1_000
   @max_flush_backoff_ms 30_000
 
@@ -128,9 +129,10 @@ defmodule EndPointBlank.Writers.DelayedWriter do
   end
 
   # Nothing queued. Returning here is not only an optimisation: it keeps an
-  # idle host app from making an `Agent.get/2` call per tick, forever, to the
-  # very process whose unavailability is the likeliest way for this callback
-  # to fail at all.
+  # idle host app from touching the config store once a tick, forever — the
+  # store whose unavailability is still the likeliest way for this callback to
+  # fail at all, even now that reaching it costs an ETS lookup rather than a
+  # message round trip.
   defp flush(queues) when map_size(queues) == 0, do: :ok
 
   defp flush(queues) do
@@ -167,12 +169,18 @@ defmodule EndPointBlank.Writers.DelayedWriter do
     # raising task from taking its caller down. That is write_batch/1's job.
     #
     # What this covers is everything the flush evaluates in *this* process:
-    # batches/1, the reduce above, and `EndPointBlank.Config.worker_count/0`,
-    # which is an `Agent.get/2` carrying a 5000 ms default timeout that exits
-    # its caller when it expires. That call is an argument to
-    # `Task.async_stream/3`, so it runs here, before a single task is spawned —
-    # a Config agent that is slow, wedged or restarting would otherwise kill
-    # this process without any batch having failed at all.
+    # batches/1, the reduce above, and `EndPointBlank.Config.worker_count/0`.
+    # That last call is an argument to `Task.async_stream/3`, so it runs here,
+    # before a single task is spawned — nothing inside a task can guard it, and
+    # an unguarded failure there kills this process without any batch having
+    # failed at all.
+    #
+    # sc-350 changed what that failure *is* and not who dies for it. The config
+    # read used to be an `Agent.get/2` carrying a 5000 ms default timeout that
+    # exited its caller; it is now a lock-free ETS lookup that raises when the
+    # config store is down. A raise ends this process exactly as thoroughly as
+    # an exit did, so this guard is still load-bearing — `kind, reason` catches
+    # all three kinds and needed no change to keep covering it.
     kind, reason ->
       [%{scope: :flush, payloads: 0, kind: kind, reason: reason, stack: __STACKTRACE__}]
   end
@@ -195,9 +203,9 @@ defmodule EndPointBlank.Writers.DelayedWriter do
   # a batch that cannot die cannot signal anything.
   #
   # `:error`, `:exit` and `:throw` together are everything a batch can do to
-  # itself. `:exit` matters as much as `:error` here — the `Agent.get/2` and
-  # `GenServer.call/3` timeouts reachable from `DirectWriter.write/2` exit
-  # their caller rather than raising.
+  # itself. `:exit` matters as much as `:error` here — the `GenServer.call/3`
+  # timeouts reachable from `DirectWriter.write/2` exit their caller rather
+  # than raising, and a test pins that with a real one.
   #
   # Deliberately NOT covered: an exit signal delivered to the task from
   # *outside* it — `Process.exit(task_pid, :kill)`, a `max_heap_size` breach,

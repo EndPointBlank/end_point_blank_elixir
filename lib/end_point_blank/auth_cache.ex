@@ -83,11 +83,16 @@ defmodule EndPointBlank.AuthCache do
     {:noreply, state}
   end
 
+  # Narrowly `ArithmeticError`, which is what a nonsensical `cache_ttl` (nil, a
+  # string, a float-shaped binary) raises on the multiplication. A bare `rescue
+  # _` used to stand here and was harmless only by accident: the one other way
+  # this line could fail was an `Agent.get/2` timeout, and a timeout is an exit,
+  # which `rescue` never sees. sc-350 made that read raise instead, so a bare
+  # rescue would now quietly swallow "the config store is down" and cache with a
+  # made-up TTL — precisely the silent fallback sc-350 exists to remove.
   defp ttl_ms do
-    try do
-      EndPointBlank.Config.get().cache_ttl * 1_000
-    rescue
-      _ -> @default_ttl_ms
-    end
+    EndPointBlank.Config.get().cache_ttl * 1_000
+  rescue
+    ArithmeticError -> @default_ttl_ms
   end
 end

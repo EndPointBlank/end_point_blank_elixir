@@ -4,6 +4,49 @@
 
 ### Fixed
 
+- **`EndPointBlank.Config.get/0` is no longer a call to a process.** Every
+  config read in the library goes through it — `masking_rules/0`,
+  `mask_hook/0`, `worker_count/0`, all seven URL builders — so it sat in the
+  hot path of every inbound request (the authorization plug, the version
+  finder) and every outbound write. It was `Agent.get(__MODULE__, &resolve/1)`,
+  which serialised all of that through a single mailbox for data that is
+  written once at boot, and carried `Agent.get/2`'s 5000 ms default timeout.
+  A call timeout **exits the caller**: a config process that was slow, wedged
+  or merely restarting did not return an error to its readers, it killed them,
+  a plug mid-request included.
+
+  Writes still go through the Agent, which remains the writer of record: it
+  serialises `update/1`'s read-modify-write and owns the read path's ETS
+  table, so config still dies with the process rather than outliving it. Reads
+  go straight to that table — `:protected`, `read_concurrency`, one row — as a
+  lock-free lookup in the calling process. `ENDPOINTBLANK_*` fallbacks are
+  unchanged and still resolved on every read, not frozen at write time: the
+  table holds the *stored* config, and `resolve/1` now runs in the reader.
+
+  ETS rather than `:persistent_term`, which is the other way to make a read
+  free. Measured on this library's own struct: reads are 0.04 µs from
+  `:persistent_term` against 0.16–1.2 µs from ETS (the difference is the copy,
+  and it only becomes visible with a long `:masking_rules` list), but a
+  `:persistent_term.put/2` of a changed value costs 170–430 µs against ETS's
+  0.2 µs, and it pays that by scheduling a scan of **every process on the
+  node** — the cost rises with the host's total live heap, not with anything
+  this library does. This is a library embedded in someone else's application,
+  `configure/1` is public API a host may call at runtime, and `update/1` and
+  `reset/0` run constantly under test. Trading a sub-microsecond read for a
+  node-wide GC pass per write is the wrong trade here.
+
+  If the store is unavailable, `get/0` raises with a message saying so. It
+  deliberately does **not** catch and fall back to a default `%Config{}`: that
+  would authorize requests against `nil` credentials and write telemetry to
+  the public default base URL because a process was down. Note this is a
+  change in kind — an unavailable config used to *exit* its reader and now
+  *raises* in it. `EndPointBlank.Writers.DelayedWriter` already guards its
+  flush callback against both (see below), and that guard is still required
+  and still tested. `AuthCache`'s `rescue` around the config read has been
+  narrowed from `_` to `ArithmeticError`, which is the nonsensical
+  `:cache_ttl` it was always for; a bare rescue would now swallow "the config
+  store is down" and cache with an invented TTL.
+
 - **`EndPointBlank.Writers.DelayedWriter` can no longer take the host
   application down.** It ran `Task.async_stream/3` inside its own
   `handle_info/2`, and those tasks are linked to the caller — so any raise or

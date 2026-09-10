@@ -73,11 +73,21 @@ reaches your controllers.
 
 ## Configuration
 
-All settings are held in a singleton `EndPointBlank.Config` agent (started by
+All settings live in a singleton `EndPointBlank.Config` store (started by
 `EndPointBlank.Application`), set via `EndPointBlank.configure/1`, and read
 back via `EndPointBlank.Config.get/0`. Six of them also fall back to
 `ENDPOINTBLANK_*` environment variables so you can run without any
 Elixir-side configuration at all (e.g. purely env-driven deployments).
+
+Writes go through an Agent, which serialises them. Reads do not: `Config.get/0`
+is a lock-free ETS lookup performed in the calling process, because it sits in
+the hot path of every inbound request and every outbound write. Nothing your
+app does can queue behind a config write, and a busy config process cannot
+take a request down with it. If the store is unavailable — the application is
+not started, or the config process is down — `Config.get/0` **raises**. It
+does not fall back to a blank config: that would mean authorizing against
+`nil` credentials and shipping telemetry to the default base URL because a
+process happened to be down.
 
 **Precedence** (per setting, resolved fresh on every `Config.get/0` call —
 the env var is never cached): **explicit `configure/1` value > `ENDPOINTBLANK_*`
