@@ -84,6 +84,17 @@ defmodule EndPointBlank.Writers.ExceptionWriterTest do
     assert payload["source_application_environment_id"] == "app-env-1"
   end
 
+  test "mints a uuid when no request context is active" do
+    # RequestStore is process-dictionary-backed, so it reads empty not just
+    # fully outside a request but also mid-request from any process other
+    # than the one Phoenix allocated to it — a Task.async closure, an Oban
+    # worker, a GenServer callback. Without a mint here, this payload's uuid
+    # is nil, and intake's `validate_required([:uuid, ...])` rejects the row.
+    ExceptionWriter.write(%RuntimeError{message: "bare"})
+
+    refute is_nil(written().payload["uuid"])
+  end
+
   test "stamps the path and method when a conn is in scope" do
     RequestStore.put_conn(Plug.Test.conn("DELETE", "/books/1"))
 
