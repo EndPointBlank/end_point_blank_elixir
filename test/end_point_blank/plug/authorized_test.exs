@@ -47,9 +47,24 @@ defmodule EndPointBlank.Plug.AuthorizedTest do
     end)
   end
 
+  # Intake's real 201 body: the grant list under `data`, as
+  # `IntakeWeb.AuthorizationJSON.show/1` renders it (values copied from intake's
+  # authorization_json_test.exs). This stub used to answer an invented
+  # `accesses` key, which is how the SDK's read of that key went unnoticed
+  # (sc-463).
   defp granting(deprecation \\ nil) do
     body =
-      %{"accesses" => [%{"source_application_environment_id" => "app-env-1"}]}
+      %{
+        "authorized" => true,
+        "data" => [
+          %{
+            "id" => "gen-1",
+            "source_application_environment_id" => "app-env-1",
+            "target_application_environment_id" => "tgt-env",
+            "inserted_at" => "2026-01-01T00:00:00Z"
+          }
+        ]
+      }
       |> then(fn b -> if deprecation, do: Map.put(b, "deprecation", deprecation), else: b end)
 
     fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(body) end
@@ -75,6 +90,16 @@ defmodule EndPointBlank.Plug.AuthorizedTest do
 
       refute conn.halted
       assert conn.status == nil
+    end
+
+    test "records the caller's source environment for the reports that follow", ctx do
+      # The response, log and error writers attach this id, and intake maps it
+      # to the portal's "Client" on an error's detail page. Nil blanks that row.
+      stub(granting())
+
+      call(ctx)
+
+      assert RequestStore.get_source_env_id() == "app-env-1"
     end
 
     test "sets the deprecation headers the authorization came with", ctx do

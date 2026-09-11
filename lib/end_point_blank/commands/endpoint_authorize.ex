@@ -77,11 +77,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
 
         case result do
           {:ok, %Req.Response{status: 201, body: resp_body}} ->
-            source_env_id =
-              case resp_body do
-                %{"accesses" => [%{"source_application_environment_id" => id} | _]} -> id
-                _ -> nil
-              end
+            source_env_id = source_env_id(resp_body)
 
             deprecation =
               case resp_body do
@@ -102,6 +98,30 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
             {:error, :service_unavailable}
         end
     end
+  end
+
+  # Intake renders the grant list under `data` (IntakeWeb.AuthorizationJSON.show/1).
+  # `accesses` is only the name of that view's render assign. Reading it here
+  # was sc-463: the id was nil on every authorized request, and nothing said so.
+  #
+  # There is no fallback to `accesses`. Intake has never sent it, so a fallback
+  # would only hide the next mismatch. Intake refuses (401) any caller whose
+  # credential has no application environment, so a 201 without the id means
+  # the contract moved. The call still proceeds, because refusing would turn an
+  # attribution defect into an outage of legitimate traffic. But it logs, once
+  # per cache miss, rather than passing for success.
+  defp source_env_id(%{"data" => [%{"source_application_environment_id" => id} | _]})
+       when is_binary(id),
+       do: id
+
+  defp source_env_id(body) do
+    Logger.error(
+      "[EndPointBlank] Authorized, but the response has no " <>
+        "data[0].source_application_environment_id, so this request's responses, " <>
+        "logs and errors will not name their caller: body=#{inspect(body)}"
+    )
+
+    nil
   end
 
   defp remote_ip(%{remote_ip: ip}) when is_tuple(ip) do

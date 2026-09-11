@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- **The caller's source environment is recorded again (sc-463).** On a 201,
+  `EndPointBlank.Commands.EndpointAuthorize` read
+  `source_application_environment_id` from an `accesses` key. Intake has only
+  ever sent the grant list under `data`, so the id was always `nil`. That nil
+  went into `RequestStore`, the auth cache, and every response, log and error
+  payload, and the portal's error detail page could not name the calling
+  client. It now reads `data`, as the Rails SDK does. A 201 that still
+  carries no id authorizes the request but logs an error instead of passing
+  silently. The test stubs had invented the `accesses` shape; they now
+  answer in intake's real one.
+
 - **`EndPointBlank.Config.get/0` is no longer a call to a process.** Every
   config read in the library goes through it — `masking_rules/0`,
   `mask_hook/0`, `worker_count/0`, all seven URL builders — so it sat in the

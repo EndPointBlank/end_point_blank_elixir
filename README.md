@@ -220,9 +220,9 @@ Under the hood it:
 - Caches successful authorizations for up to `:cache_ttl` seconds
   (`EndPointBlank.AuthCache`), keyed on the caller's own auth header, path,
   HTTP method, and `app_name` — repeat calls skip the network round trip.
-- Stores the resulting `source_application_environment_id` in
-  `EndPointBlank.RequestStore` for the rest of the request lifecycle (it's
-  attached to request/response/log/error payloads).
+- Stores the `source_application_environment_id` from the response's `data`
+  list in `EndPointBlank.RequestStore` for the rest of the request lifecycle
+  (it's attached to response/log/error payloads).
 
 `EndPointBlank.UnauthorizedError` is available for your own code to raise on
 authorization failures. `EndPointBlank.Plug.ReportInteraction` (below)

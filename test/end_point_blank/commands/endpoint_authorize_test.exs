@@ -73,15 +73,39 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
     end)
   end
 
-  defp authorized(opts \\ []) do
+  defp authorized(opts \\ []), do: responding(201, intake_authorize_body(opts))
+
+  # Intake's real 201 body. `IntakeWeb.AuthorizationController.create/2` renders
+  # `:show, accesses: [access_map]`, and `IntakeWeb.AuthorizationJSON.show/1`
+  # puts that list under `data` -- `accesses` is the name of the render assign,
+  # not a key on the wire. Field values are copied from intake's
+  # authorization_json_test.exs ("the shape the live HTTP path actually
+  # produces"); `deprecation` is present only for a deprecated version.
+  #
+  # Every 201 here is built from this. This file stubbed an invented
+  # `%{"accesses" => ...}` body from its first commit, so the SDK read a key
+  # intake has never sent and still passed its own suite (sc-463).
+  defp intake_authorize_body(opts \\ []) do
     env_id = Keyword.get(opts, :source_env_id, "app-env-1")
-    deprecation = Keyword.get(opts, :deprecation)
 
-    body =
-      %{"accesses" => [%{"source_application_environment_id" => env_id}]}
-      |> then(fn b -> if deprecation, do: Map.put(b, "deprecation", deprecation), else: b end)
-
-    responding(201, body)
+    %{
+      "authorized" => true,
+      "data" => [
+        %{
+          "id" => "gen-1",
+          "source_application_environment_id" => env_id,
+          "target_application_environment_id" => "tgt-env",
+          "inserted_at" => "2026-01-01T00:00:00Z"
+        }
+      ]
+    }
+    |> then(fn body ->
+      case Keyword.fetch(opts, :deprecation) do
+        {:ok, nil} -> body
+        {:ok, deprecation} -> Map.put(body, "deprecation", deprecation)
+        :error -> body
+      end
+    end)
   end
 
   defp responding(status, body) do
@@ -225,11 +249,21 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
       assert call.body["endpoint_version"] == "7"
     end
 
-    test "accepts a response that grants access without naming an environment", ctx do
-      stub_intake(%{@authorize_path => responding(201, %{"accesses" => []})})
+    test "a 201 that names no source environment still authorizes, but says so loudly", ctx do
+      # Intake's live 201 always carries the id: it refuses (401) any caller
+      # whose credential has no application environment. So a 201 without one
+      # means the response contract moved -- exactly what sc-463 was, silently.
+      # Refusing would turn an attribution defect into an outage of legitimate
+      # traffic, so the call proceeds; but it must not look like success.
+      stub_intake(%{@authorize_path => responding(201, %{"authorized" => true, "data" => []})})
 
-      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      log =
+        capture_log(fn ->
+          assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+        end)
+
       assert RequestStore.get_source_env_id() == nil
+      assert log =~ "source_application_environment_id"
     end
   end
 
@@ -256,7 +290,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
     end
 
     test "ignores a deprecation block that is not a map", ctx do
-      stub_intake(%{@authorize_path => responding(201, %{"deprecation" => "soon"})})
+      stub_intake(%{@authorize_path => authorized(deprecation: "soon")})
 
       assert {:ok, out} = EndpointAuthorize.authorize(conn(ctx))
       assert Plug.Conn.get_resp_header(out, "deprecation") == []
