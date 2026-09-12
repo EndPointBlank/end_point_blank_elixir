@@ -54,5 +54,23 @@ defmodule EndPointBlank.HttpTest do
 
       assert Agent.get(counter, & &1) == 3
     end
+
+    # Applications set this seam in their own tests, and not always to a
+    # {Req.Test, name} tuple: epb_test_ex installs a bare function. Req 0.7
+    # moved `:plug` from the run_plug step to the Req.Plug adapter, and
+    # `{:req, "~> 0.5"}` admits every 0.x from 0.5 on, so the shape an
+    # application uses is pinned here rather than assumed.
+    test "accepts a bare function plug, which receives the JSON body" do
+      Application.put_env(:end_point_blank_elixir, :req_test_plug, fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(201, raw)
+      end)
+
+      assert {:ok, %Req.Response{status: 201, body: %{"a" => 1}}} =
+               Http.post("https://example.test/x", %{a: 1}, "Basic abc")
+    end
   end
 end
