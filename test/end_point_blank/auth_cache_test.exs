@@ -8,8 +8,11 @@ defmodule EndPointBlank.AuthCacheTest do
   setup do
     on_exit(&Config.reset/0)
 
-    # The table is process-wide and has no public clear, so every test works on
-    # keys nothing else will collide with.
+    # The table is process-wide and shared for the life of the run, including
+    # by other test files that exercise AuthCache (e.g. EndpointAuthorizeTest).
+    # Calling the now-public clear/0 here would be one more moving part to
+    # keep synchronized with every other suite touching the same table, so
+    # every test here just works on a key nothing else will collide with.
     %{key: "epb_auth:test:#{System.unique_integer([:positive])}"}
   end
 
