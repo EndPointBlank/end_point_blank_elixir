@@ -31,18 +31,29 @@ defmodule EndPointBlank.AuthCache do
   def get(key) do
     now = System.monotonic_time(:millisecond)
 
-    case :ets.lookup(@table, key) do
-      [{^key, source_env_id, expires_at}] when expires_at > now ->
-        {:hit, source_env_id}
+    if ttl_ms() <= 0 do
+      :miss
+    else
+      case :ets.lookup(@table, key) do
+        [{^key, source_env_id, expires_at}] when expires_at > now ->
+          {:hit, source_env_id}
 
-      _ ->
-        :miss
+        _ ->
+          :miss
+      end
     end
   end
 
   @doc "Stores a successful auth result (source_env_id may be nil) under *key*."
   def put(key, source_env_id) do
-    GenServer.cast(__MODULE__, {:put, key, source_env_id})
+    case ttl_ms() do
+      ttl when ttl <= 0 ->
+        :ok
+
+      ttl ->
+        expires_at = System.monotonic_time(:millisecond) + ttl
+        GenServer.cast(__MODULE__, {:put, key, source_env_id, expires_at})
+    end
   end
 
   # ── GenServer callbacks ──────────────────────────────────────────────────────
@@ -54,9 +65,8 @@ defmodule EndPointBlank.AuthCache do
   end
 
   @impl true
-  def handle_cast({:put, key, source_env_id}, state) do
+  def handle_cast({:put, key, source_env_id, expires_at}, state) do
     now = System.monotonic_time(:millisecond)
-    expires_at = now + ttl_ms()
 
     # Evict expired entries
     :ets.select_delete(@table, [{{:_, :_, :"$1"}, [{:<, :"$1", now}], [true]}])

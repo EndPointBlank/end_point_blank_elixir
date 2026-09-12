@@ -68,6 +68,15 @@ defmodule EndPointBlank.AuthCacheTest do
 
       assert AuthCache.get(key) == {:hit, {"app-env-2", nil}}
     end
+
+    test "lowering the TTL to zero invalidates an existing entry", %{key: key} do
+      Config.update(cache_ttl: 300)
+      put(key, {"app-env-1", nil})
+
+      Config.update(cache_ttl: 0)
+
+      assert AuthCache.get(key) == :miss
+    end
   end
 
   describe "resilience" do
@@ -82,6 +91,21 @@ defmodule EndPointBlank.AuthCacheTest do
 
       assert AuthCache.get(key) == {:hit, {"app-env-1", nil}}
       assert Process.alive?(Process.whereis(AuthCache))
+    end
+
+    test "does not queue a write when the TTL is non-positive", %{key: key} do
+      Config.update(cache_ttl: 0)
+
+      :sys.suspend(AuthCache)
+      try do
+        assert AuthCache.put(key, {"app-env-1", nil}) == :ok
+      after
+        :sys.resume(AuthCache)
+      end
+
+      sync()
+
+      assert AuthCache.get(key) == :miss
     end
   end
 
