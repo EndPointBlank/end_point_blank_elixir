@@ -4,6 +4,41 @@
 
 ### Fixed
 
+- **Disabling `AuthCache` now actually invalidates it, instead of only
+  hiding entries (sc-660).** `cache_ttl <= 0` previously made `get/1` refuse
+  to look at the table, but left every stored row untouched; restoring
+  `cache_ttl` afterwards brought every one of them back, including a
+  decision cached before a grant was revoked. An operator disabling the
+  cache specifically to force-flush a revoked grant, then re-enabling it
+  once the caller was confirmed refused, would have that stale
+  authorization silently resurface from cache. `get/1` and `put/2` now
+  delete every entry (`:ets.delete_all_objects/1`) whenever they observe the
+  cache disabled, and `handle_cast/2` re-checks the *current* `cache_ttl`
+  before writing rather than trusting the expiry it was handed, so a write
+  that raced the disable — decided while the TTL was still live, processed
+  after it dropped to zero — can no longer land and outlive the disable it
+  raced. `EndPointBlank.AuthCache.clear/0` is now public, matching the
+  `clear()` the JS, Python and Ruby SDKs already had; Elixir was the only
+  one without it.
+
+  **Known remaining gap, deliberately not fixed here:** lowering `cache_ttl`
+  to a smaller *positive* value (e.g. `300` to `10`) does not shorten the
+  remaining life of entries already cached — they keep answering until
+  their original expiry. Only dropping to `0` or below (a full disable)
+  gets the immediate-effect behavior above. sc-660 named "lowering the TTL"
+  generally as the incident-response case worth covering; a correct fix for
+  the partial case needs either recomputing an entry's remaining life
+  against the *currently* configured TTL from its original write time (a
+  larger change to the expiry model — a naive "remaining ≤ current TTL"
+  clamp is subtly wrong: it lets an entry outlive a lowered TTL once enough
+  time has passed that its remaining life happens to fit back under the new,
+  shorter window) or tracking the previously observed TTL to detect and act
+  on any downward change, not just a drop to zero. Both are a bigger design
+  question than this PR's scope. None of the JS, Python or Ruby SDKs
+  implement TTL-driven invalidation at all today (they only ever consult
+  `cache_ttl` at write time), so this is a four-SDK gap, not an Elixir-only
+  one.
+
 - **The caller's source environment is recorded again (sc-463).** On a 201,
   `EndPointBlank.Commands.EndpointAuthorize` read
   `source_application_environment_id` from an `accesses` key. Intake has only
