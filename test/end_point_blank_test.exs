@@ -58,7 +58,7 @@ defmodule EndPointBlankTest do
         end
 
       assert error.message =~ "not_a_real_setting"
-      refute Config.get().app_name == "my-app"
+      assert Config.get().app_name == nil
     end
 
     test "leaves defaults in place for options not given" do

@@ -321,4 +321,36 @@ defmodule EndPointBlank.ConfigTest do
       end
     end
   end
+
+  # Before this change, `update/1`'s `Enum.reduce/3` pattern-matched every
+  # element of `opts` as a `{k, v}` tuple *inside* the function passed to
+  # `Agent.update/2`. A plain atom element isn't a 2-tuple, so that match
+  # failed in the Agent process itself and crashed the store — the same
+  # hazard as `:__struct__` above, just reached through a different bad
+  # input. A string-keyed tuple didn't crash the old code, but it didn't do
+  # anything useful either: `Map.has_key?/2` compared the string against the
+  # struct's atom keys, found nothing, and silently dropped it — the same
+  # silent no-op this whole change exists to stop. `update/1` now rejects
+  # both up front, in the caller, before the Agent is ever touched.
+  describe "update/1 rejects non-keyword lists" do
+    test "raises when given a plain atom instead of a {key, value} pair" do
+      config_pid = Process.whereis(Config)
+
+      assert_raise ArgumentError, fn -> Config.update([:foo]) end
+
+      assert Process.alive?(config_pid)
+      assert Process.whereis(Config) == config_pid
+      assert %Config{} = Config.get()
+    end
+
+    test "raises when a key is a string instead of an atom" do
+      config_pid = Process.whereis(Config)
+
+      assert_raise ArgumentError, fn -> Config.update([{"client_id", "x"}]) end
+
+      assert Process.alive?(config_pid)
+      assert Process.whereis(Config) == config_pid
+      assert %Config{} = Config.get()
+    end
+  end
 end

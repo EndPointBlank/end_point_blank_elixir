@@ -82,8 +82,10 @@ defmodule EndPointBlank.Config do
   defstruct @struct_fields
 
   # `:__struct__` is deliberately excluded: it is a key of `%__MODULE__{}` (so
-  # `Map.has_key?/2` used to say yes to it), but it is not a setting — putting
-  # it would swap out the struct's module and corrupt every read thereafter.
+  # `Map.has_key?/2` used to say yes to it), but it is not a setting. Putting
+  # it doesn't quietly corrupt the struct — `publish/1` pattern-matches
+  # `%__MODULE__{}`, so it crashes the config Agent outright with a
+  # FunctionClauseError, taking the whole store down with it.
   @valid_keys Enum.map(@struct_fields, fn
                 {key, _default} -> key
                 key when is_atom(key) -> key
