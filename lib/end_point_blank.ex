@@ -34,6 +34,13 @@ defmodule EndPointBlank do
   @doc """
   Configures the EndPointBlank library.
 
+  Raises `ArgumentError` if `opts` contains any key that is not one of the
+  options below (see `EndPointBlank.Config.update/1`) — including a
+  misspelled or obsolete one. Nothing in `opts` is applied when that happens,
+  even the options that were fine: a bad `configure/1` call is a boot-time
+  bug, and this library does not silently run with a dropped setting instead
+  of surfacing it.
+
   ## Options
 
     * `:base_url` - Authorization and update endpoint base URL
@@ -46,6 +53,11 @@ defmodule EndPointBlank do
     * `:log_mode` - `:direct` (synchronous) or `:delayed` (background queue)
     * `:token_ttl` - Optional access-token TTL in seconds
     * `:version_finder` - Optional 1-arity function for custom version detection
+    * `:mask_hook` - Optional post-rule masking hook, `fn payload, record_type -> payload end`
+    * `:masking_rules` - Ordered list of masking rule maps (see the README's "Data masking")
+    * `:worker_count` - Max concurrent writes `EndPointBlank.Writers.DelayedWriter` performs per flush (default `4`)
+    * `:cache_ttl` - Authorization-cache TTL in seconds, `EndPointBlank.AuthCache` (default `300`)
+    * `:trust_proxy_headers` - Whether the per-request `scheme`/`host`/`port` report honors `x-forwarded-*` headers (default `true`)
 
   ## Example
 

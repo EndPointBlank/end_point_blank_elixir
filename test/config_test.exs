@@ -260,4 +260,97 @@ defmodule EndPointBlank.ConfigTest do
       assert Config.get().client_id == nil
     end
   end
+
+  # A misspelled or obsolete key used to be dropped on the floor by
+  # `Enum.reduce/3`'s `Map.has_key?/2` guard: `configure(client_secert: "x")`
+  # silently ran with `client_secret: nil`, and `configure(base_uri: "...")`
+  # silently kept the public default `base_url`. Both are the "boots clean and
+  # is quietly wrong" shape this project's no-silent-failures rule exists to
+  # prevent, so `update/1` now refuses instead.
+  describe "update/1 rejects unknown keys" do
+    test "raises ArgumentError naming the unknown key" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Config.update(client_secert: "typo'd-secret")
+        end
+
+      assert error.message =~ "client_secert"
+    end
+
+    test "a mix of valid and unknown keys raises and applies neither" do
+      Config.update(app_name: "before")
+
+      assert_raise ArgumentError, fn ->
+        Config.update(app_name: "after", base_uri: "https://typo.example.com")
+      end
+
+      # The valid key in the same call was not applied either: the update is
+      # all-or-nothing, not best-effort.
+      assert Config.get().app_name == "before"
+    end
+
+    test "the config process survives the raise, and get/0 still works" do
+      # Validation runs in the calling process, before Agent.update/2 is ever
+      # called. If it instead ran inside the Agent's update function, the
+      # raise would crash the Agent that owns the config ETS table — taking
+      # the whole config store down with it, not just this call. Assert on
+      # the process directly, not only that get/0 happens to still answer.
+      config_pid = Process.whereis(Config)
+
+      assert_raise ArgumentError, fn -> Config.update(not_a_real_setting: true) end
+
+      assert Process.alive?(config_pid)
+      assert Process.whereis(Config) == config_pid
+      assert %Config{} = Config.get()
+    end
+
+    test "rejects :__struct__" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Config.update(__struct__: NotTheRealConfigStruct)
+        end
+
+      assert error.message =~ "__struct__"
+    end
+
+    test "every currently valid key is still accepted" do
+      valid_keys = Map.keys(%Config{}) -- [:__struct__]
+
+      for key <- valid_keys do
+        assert Config.update([{key, nil}]) == :ok
+      end
+    end
+  end
+
+  # Before this change, `update/1`'s `Enum.reduce/3` pattern-matched every
+  # element of `opts` as a `{k, v}` tuple *inside* the function passed to
+  # `Agent.update/2`. A plain atom element isn't a 2-tuple, so that match
+  # failed in the Agent process itself and crashed the store — the same
+  # hazard as `:__struct__` above, just reached through a different bad
+  # input. A string-keyed tuple didn't crash the old code, but it didn't do
+  # anything useful either: `Map.has_key?/2` compared the string against the
+  # struct's atom keys, found nothing, and silently dropped it — the same
+  # silent no-op this whole change exists to stop. `update/1` now rejects
+  # both up front, in the caller, before the Agent is ever touched.
+  describe "update/1 rejects non-keyword lists" do
+    test "raises when given a plain atom instead of a {key, value} pair" do
+      config_pid = Process.whereis(Config)
+
+      assert_raise ArgumentError, fn -> Config.update([:foo]) end
+
+      assert Process.alive?(config_pid)
+      assert Process.whereis(Config) == config_pid
+      assert %Config{} = Config.get()
+    end
+
+    test "raises when a key is a string instead of an atom" do
+      config_pid = Process.whereis(Config)
+
+      assert_raise ArgumentError, fn -> Config.update([{"client_id", "x"}]) end
+
+      assert Process.alive?(config_pid)
+      assert Process.whereis(Config) == config_pid
+      assert %Config{} = Config.get()
+    end
+  end
 end

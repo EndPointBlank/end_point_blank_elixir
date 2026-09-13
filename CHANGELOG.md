@@ -2,6 +2,22 @@
 
 ## 0.7.0
 
+### Breaking
+
+- **`EndPointBlank.configure/1` (`EndPointBlank.Config.update/1`) now raises
+  `ArgumentError` on an unknown option, instead of silently dropping it.**
+  Code that passed a misspelled or obsolete key — `client_secert:`,
+  `base_uri:` — previously ran with that setting quietly missing (`nil`
+  credentials, or the public default `base_url`) and no indication why. It
+  now raises at the `configure/1` call, which for most hosts means at boot,
+  so check your `configure/1` options before upgrading. The check is
+  all-or-nothing: a mix of valid and unknown keys applies none of them.
+  It also rejects `:__struct__` and anything that is not a keyword list. On
+  0.6.0, `:__struct__` or a bare atom (`configure([:foo])`) crashed the config
+  Agent outright (`FunctionClauseError`). Validation runs in the calling
+  process, before the config Agent is touched, so a bad call cannot crash the
+  Agent that owns the config store for the rest of the host app.
+
 ### Documentation
 
 - **The README's install section said the package is on a private Hex
