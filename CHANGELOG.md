@@ -132,6 +132,18 @@
 
 ### Changed
 
+- **`EndPointBlank.configure/1` (`EndPointBlank.Config.update/1`) now raises
+  `ArgumentError` on an unknown option, instead of silently dropping it.**
+  This is a behaviour change: code that passed a misspelled or obsolete key —
+  `client_secert:`, `base_uri:` — previously ran with that setting quietly
+  missing (`nil` credentials, or the public default `base_url`) and no
+  indication why. It now raises at the `configure/1` call, which for most
+  hosts means at boot. The check is all-or-nothing (a mix of valid and
+  unknown keys applies none of them) and also rejects `:__struct__`, which
+  used to be accepted as a "valid" struct key and would have corrupted the
+  stored config. Validation runs in the calling process, before the config
+  Agent is touched, so a bad call cannot crash the Agent that owns the config
+  store for the rest of the host app.
 - **The `:delayed` flush interval is now 1 second, was 100 ms.** A 100 ms
   window batched almost nothing at any realistic payload rate, cost ten
   wakeups (and ten `Agent.get/2` round trips to the Config agent) per second in

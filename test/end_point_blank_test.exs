@@ -46,11 +46,19 @@ defmodule EndPointBlankTest do
       assert Config.get().environment == "production"
     end
 
-    test "ignores an unknown option instead of crashing the host's boot" do
-      EndPointBlank.configure(app_name: "my-app", not_a_real_setting: true)
+    test "raises on an unknown option instead of silently dropping it" do
+      # Previously ignored an unknown key instead of applying it, which is
+      # exactly the "boots clean and is quietly wrong" shape this project's
+      # no-silent-failures rule forbids: a misspelled `client_secert:` used to
+      # run with `client_secret: nil`. See EndPointBlank.ConfigTest for the
+      # full behaviour (message contents, atomicity, the Agent surviving).
+      error =
+        assert_raise ArgumentError, fn ->
+          EndPointBlank.configure(app_name: "my-app", not_a_real_setting: true)
+        end
 
-      assert Config.get().app_name == "my-app"
-      refute Map.has_key?(Config.get(), :not_a_real_setting)
+      assert error.message =~ "not_a_real_setting"
+      refute Config.get().app_name == "my-app"
     end
 
     test "leaves defaults in place for options not given" do

@@ -56,7 +56,12 @@ defmodule EndPointBlank.Config do
   @table __MODULE__
   @key :config
 
-  defstruct [
+  # The single source of truth for both the struct's fields and the settings
+  # `update/1` accepts, so the two cannot drift apart. `%__MODULE__{}` can't be
+  # used to derive @valid_keys instead (below): a struct can't be constructed
+  # in the same module body that defines it, before the module finishes
+  # compiling.
+  @struct_fields [
     :client_id,
     :client_secret,
     :app_name,
@@ -73,6 +78,16 @@ defmodule EndPointBlank.Config do
     trust_proxy_headers: true,
     masking_rules: []
   ]
+
+  defstruct @struct_fields
+
+  # `:__struct__` is deliberately excluded: it is a key of `%__MODULE__{}` (so
+  # `Map.has_key?/2` used to say yes to it), but it is not a setting — putting
+  # it would swap out the struct's module and corrupt every read thereafter.
+  @valid_keys Enum.map(@struct_fields, fn
+                {key, _default} -> key
+                key when is_atom(key) -> key
+              end)
 
   def start_link(_opts) do
     Agent.start_link(&init_store/0, name: __MODULE__)
@@ -115,19 +130,53 @@ defmodule EndPointBlank.Config do
   end
 
   @doc """
-  Merges `opts` into the stored config, ignoring keys that are not settings.
+  Merges `opts` into the stored config.
+
+  Raises `ArgumentError` if `opts` contains any key that is not a setting —
+  including `:__struct__`, which is otherwise a "valid" key of the struct but
+  would corrupt it if put. The check is all-or-nothing: if any key is
+  unknown, none of `opts` is applied, including the keys that were fine.
+
+  A misspelled or obsolete key (`client_secert:`, `base_uri:`) used to be
+  dropped silently, which left the host running with `nil` credentials or the
+  public default base URL and no indication why. This library does not do
+  silent fallbacks; a bad `configure/1` call is a boot-time bug and should
+  crash the boot.
+
+  The check runs in the calling process, *before* `Agent.update/2` is called
+  — never inside the function passed to it. `update/1` is called from
+  arbitrary host code (usually `EndPointBlank.configure/1` at boot), and an
+  exception raised inside `Agent.update/2`'s function crashes the Agent
+  itself, not just the caller. That Agent is this config store's only writer
+  and the owner of the read path's ETS table (see the moduledoc), so crashing
+  it over one bad `configure/1` call would take the whole store down for
+  every reader in the host app, not just reject the one bad call.
 
   Serialised through the Agent, and synchronous: once this returns, every
   process reading `get/0` sees the new value.
   """
   def update(opts) when is_list(opts) do
-    Agent.update(__MODULE__, fn config ->
-      opts
-      |> Enum.reduce(config, fn {k, v}, acc ->
-        if Map.has_key?(acc, k), do: Map.put(acc, k, v), else: acc
-      end)
-      |> publish()
-    end)
+    case unknown_keys(opts) do
+      [] ->
+        Agent.update(__MODULE__, fn config ->
+          opts
+          |> Enum.reduce(config, fn {k, v}, acc -> Map.put(acc, k, v) end)
+          |> publish()
+        end)
+
+      unknown ->
+        raise ArgumentError,
+              "EndPointBlank.configure/1 (EndPointBlank.Config.update/1) received " <>
+                "unknown option(s): #{inspect(unknown)}. Valid options are: " <>
+                "#{inspect(@valid_keys)}."
+    end
+  end
+
+  defp unknown_keys(opts) do
+    opts
+    |> Keyword.keys()
+    |> Enum.uniq()
+    |> Enum.reject(&(&1 in @valid_keys))
   end
 
   @doc false
