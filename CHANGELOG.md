@@ -1,35 +1,6 @@
 # Changelog
 
-## 0.7.0
-
-### Breaking
-
-- **`EndPointBlank.configure/1` (`EndPointBlank.Config.update/1`) now raises
-  `ArgumentError` on an unknown option, instead of silently dropping it.**
-  Code that passed a misspelled or obsolete key — `client_secert:`,
-  `base_uri:` — previously ran with that setting quietly missing (`nil`
-  credentials, or the public default `base_url`) and no indication why. It
-  now raises at the `configure/1` call, which for most hosts means at boot,
-  so check your `configure/1` options before upgrading. The check is
-  all-or-nothing: a mix of valid and unknown keys applies none of them.
-  It also rejects `:__struct__` and anything that is not a keyword list. On
-  0.6.0, `:__struct__` or a bare atom (`configure([:foo])`) crashed the config
-  Agent outright (`FunctionClauseError`). Validation runs in the calling
-  process, before the config Agent is touched, so a bad call cannot crash the
-  Agent that owns the config store for the rest of the host app.
-
-### Documentation
-
-- **The README's install section said the package is on a private Hex
-  organization. It is not.** Every release, 0.6.0 included, was published to
-  the public hex.pm repository. The install instructions now show the plain
-  `{:end_point_blank_elixir, "~> 0.7.0"}` dependency, with no `organization:`
-  and no `mix hex.organization auth` step. It also recommends pinning to the
-  patch level, because breaking changes ship in minor releases before 1.0.
-- **The README showed `version_of :index, ["v1"], state: "Current"`.** There
-  is no three-argument `version_of`; that example did not compile. Lifecycle
-  state is managed in the portal, and the README now says so and shows
-  `version_of/2`.
+## Unreleased
 
 ### Fixed
 
@@ -67,6 +38,39 @@
   implement TTL-driven invalidation at all today (they only ever consult
   `cache_ttl` at write time), so this is a four-SDK gap, not an Elixir-only
   one.
+
+## 0.7.0
+
+### Breaking
+
+- **`EndPointBlank.configure/1` (`EndPointBlank.Config.update/1`) now raises
+  `ArgumentError` on an unknown option, instead of silently dropping it.**
+  Code that passed a misspelled or obsolete key — `client_secert:`,
+  `base_uri:` — previously ran with that setting quietly missing (`nil`
+  credentials, or the public default `base_url`) and no indication why. It
+  now raises at the `configure/1` call, which for most hosts means at boot,
+  so check your `configure/1` options before upgrading. The check is
+  all-or-nothing: a mix of valid and unknown keys applies none of them.
+  It also rejects `:__struct__` and anything that is not a keyword list. On
+  0.6.0, `:__struct__` or a bare atom (`configure([:foo])`) crashed the config
+  Agent outright (`FunctionClauseError`). Validation runs in the calling
+  process, before the config Agent is touched, so a bad call cannot crash the
+  Agent that owns the config store for the rest of the host app.
+
+### Documentation
+
+- **The README's install section said the package is on a private Hex
+  organization. It is not.** Every release, 0.6.0 included, was published to
+  the public hex.pm repository. The install instructions now show the plain
+  `{:end_point_blank_elixir, "~> 0.7.0"}` dependency, with no `organization:`
+  and no `mix hex.organization auth` step. It also recommends pinning to the
+  patch level, because breaking changes ship in minor releases before 1.0.
+- **The README showed `version_of :index, ["v1"], state: "Current"`.** There
+  is no three-argument `version_of`; that example did not compile. Lifecycle
+  state is managed in the portal, and the README now says so and shows
+  `version_of/2`.
+
+### Fixed
 
 - **The caller's source environment is recorded again (sc-463).** On a 201,
   `EndPointBlank.Commands.EndpointAuthorize` read
