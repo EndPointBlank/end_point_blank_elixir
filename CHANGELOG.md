@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
+
+### Documentation
+
+- **The README's install section said the package is on a private Hex
+  organization. It is not.** Every release, 0.6.0 included, was published to
+  the public hex.pm repository. The install instructions now show the plain
+  `{:end_point_blank_elixir, "~> 0.6"}` dependency, with no `organization:`
+  and no `mix hex.organization auth` step.
+- **The README showed `version_of :index, ["v1"], state: "Current"`.** There
+  is no three-argument `version_of`; that example did not compile. Lifecycle
+  state is managed in the portal, and the README now says so and shows
+  `version_of/2`.
 
 ### Fixed
 

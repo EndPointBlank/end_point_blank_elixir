@@ -4,26 +4,23 @@ EndPointBlank client for Elixir / Phoenix apps — endpoint tracking and authori
 
 ## Installation
 
-This package is published to a **private** Hex organization (not on the public
-`hex.pm` index). Add the dependency and pass your organization at fetch time:
+This package is published to the public [hex.pm](https://hex.pm/packages/end_point_blank_elixir)
+repository:
 
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, "~> 0.3", organization: "your-hex-org"}
+    {:end_point_blank_elixir, "~> 0.6"}
   ]
 end
 ```
 
-Then authenticate the Hex CLI against your org once per machine/CI runner
-(`mix hex.organization auth your-hex-org`) before `mix deps.get`.
-
-If you don't have Hex org access yet, depend on the git repo directly:
+Or depend on a release tag of the git repo directly:
 
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.6.0"}
+    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.6.1"}
   ]
 end
 ```
@@ -378,16 +375,21 @@ defmodule MyAppWeb.BooksController do
   use Phoenix.Controller
   use EndPointBlank.Phoenix.Versioned
 
-  version_of :index, ["v1", "v2"], state: "Current"
-  version_of :index, ["v0"],       state: "Deprecated"
+  version_of :index, ["v1", "v2"]
+  version_of :index, ["v0"]
 
   def index(conn, _params), do: ...
 end
 ```
 
+`version_of/2` takes an action and the list of versions it serves; repeated
+calls for the same action merge, deduplicated, in declaration order. Lifecycle
+state (Current, Deprecated, ...) is **not** declared in code — it is managed in
+the EndPointBlank portal, so changing it does not require a deploy.
+
 `EndpointRegistrar.register/1` introspects `router.__routes__/0`, merges in
 any `version_of` metadata, and POSTs the endpoint list (path, HTTP method,
-and `%{state => [versions]}`) to your `base_url`.
+and the list of versions) to your `base_url`.
 
 ### Data masking
 
@@ -517,7 +519,7 @@ test/                                     # ExUnit test suite
 
 ## License
 
-Proprietary. See `mix.exs` (`LicenseRef-Proprietary`) — this package is published only to a private Hex organization.
+Proprietary. See `mix.exs` (`LicenseRef-Proprietary`).
 
 ## Links
 
