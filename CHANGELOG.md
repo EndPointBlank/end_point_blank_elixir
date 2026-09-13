@@ -1,13 +1,13 @@
 # Changelog
 
-## 0.6.1
+## 0.7.0
 
 ### Documentation
 
 - **The README's install section said the package is on a private Hex
   organization. It is not.** Every release, 0.6.0 included, was published to
   the public hex.pm repository. The install instructions now show the plain
-  `{:end_point_blank_elixir, "~> 0.6.1"}` dependency, with no `organization:`
+  `{:end_point_blank_elixir, "~> 0.7.0"}` dependency, with no `organization:`
   and no `mix hex.organization auth` step. It also recommends pinning to the
   patch level, because breaking changes ship in minor releases before 1.0.
 - **The README showed `version_of :index, ["v1"], state: "Current"`.** There

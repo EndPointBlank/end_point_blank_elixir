@@ -1,7 +1,7 @@
 defmodule EndPointBlankElixir.MixProject do
   use Mix.Project
 
-  @version "0.6.1"
+  @version "0.7.0"
 
   def project do
     [
@@ -21,7 +21,7 @@ defmodule EndPointBlankElixir.MixProject do
   # Published to the PUBLIC hex.pm repository. The Publish workflow runs
   # `mix hex.publish --yes` with no `--organization`, so every GitHub Release
   # lands on the public index. Consumers depend on it with
-  # `{:end_point_blank_elixir, "~> 0.6.1"}` — patch-level, because this project
+  # `{:end_point_blank_elixir, "~> 0.7.0"}` — patch-level, because this project
   # ships breaking changes in minor releases.
   defp package do
     [
