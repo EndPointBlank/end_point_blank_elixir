@@ -98,8 +98,9 @@
   empty outside a request, and also inside one when read from any process
   other than the one Phoenix allocated: a `Task.async` closure, an Oban job, a
   GenServer callback. `ExceptionWriter` sent that `nil` as the payload's
-  `uuid`. Intake requires `uuid`, so it rejected the row and the error was
-  lost without a trace. The writer now mints a uuid when the store has none.
+  `uuid`. Intake requires `uuid`, so it rejected the row and the error never
+  reached the portal; the only sign was a `Write ... failed` warning in the
+  host's own log. The writer now mints a uuid when the store has none.
   That uuid is not correlated with any request, but the error is recorded.
   Request context is still not propagated across processes.
 
