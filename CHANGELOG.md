@@ -7,8 +7,9 @@
 - **The README's install section said the package is on a private Hex
   organization. It is not.** Every release, 0.6.0 included, was published to
   the public hex.pm repository. The install instructions now show the plain
-  `{:end_point_blank_elixir, "~> 0.6"}` dependency, with no `organization:`
-  and no `mix hex.organization auth` step.
+  `{:end_point_blank_elixir, "~> 0.6.1"}` dependency, with no `organization:`
+  and no `mix hex.organization auth` step. It also recommends pinning to the
+  patch level, because breaking changes ship in minor releases before 1.0.
 - **The README showed `version_of :index, ["v1"], state: "Current"`.** There
   is no three-argument `version_of`; that example did not compile. Lifecycle
   state is managed in the portal, and the README now says so and shows
@@ -91,6 +92,23 @@
   outside it (`Process.exit(task, :kill)`, a `max_heap_size` breach, a
   `:brutal_kill` shutdown). Those are untrappable, and mean something outside
   this library is tearing processes down on purpose. A test pins that boundary.
+
+- **Exceptions reported outside the request process are no longer dropped
+  (sc-378).** `RequestStore` is backed by the process dictionary, so it is
+  empty outside a request, and also inside one when read from any process
+  other than the one Phoenix allocated: a `Task.async` closure, an Oban job, a
+  GenServer callback. `ExceptionWriter` sent that `nil` as the payload's
+  `uuid`. Intake requires `uuid`, so it rejected the row and the error was
+  lost without a trace. The writer now mints a uuid when the store has none.
+  That uuid is not correlated with any request, but the error is recorded.
+  Request context is still not propagated across processes.
+
+- **A `mask_hook` now sees `stamped_path` and `stamped_http_method` (sc-382).**
+  `LogWriter` and `ExceptionWriter` used to mask first and merge the stamped
+  fields in afterwards, so a hook could not redact a sensitive path segment
+  such as `/patients/1234/notes`. The JS and Rails SDKs could. Both writers
+  now merge first and mask second. Rule-based masking is unaffected, because
+  no rule targets those keys.
 
 ### Added
 

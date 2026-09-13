@@ -10,10 +10,13 @@ repository:
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, "~> 0.6"}
+    {:end_point_blank_elixir, "~> 0.6.1"}
   ]
 end
 ```
+
+Pin to the patch level (`~> 0.6.1`, not `~> 0.6`): before 1.0, breaking
+changes ship in minor releases, so `~> 0.6` would accept a future 0.7.0.
 
 Or depend on a release tag of the git repo directly:
 
@@ -388,8 +391,10 @@ state (Current, Deprecated, ...) is **not** declared in code — it is managed i
 the EndPointBlank portal, so changing it does not require a deploy.
 
 `EndpointRegistrar.register/1` introspects `router.__routes__/0`, merges in
-any `version_of` metadata, and POSTs the endpoint list (path, HTTP method,
-and the list of versions) to your `base_url`.
+any `version_of` metadata, and POSTs the versioned endpoints (path, HTTP
+method, and the list of versions) to `<base_url>/api/application_updates`,
+alongside the app name, hostname, environment and application version. Routes
+whose action has no `version_of` declaration are not registered.
 
 ### Data masking
 

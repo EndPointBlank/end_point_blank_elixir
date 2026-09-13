@@ -19,9 +19,10 @@ defmodule EndPointBlankElixir.MixProject do
   end
 
   # Published to the PUBLIC hex.pm repository. The Publish workflow runs
-  # `mix hex.publish --yes` with no `--organization`, and every release so far
-  # (0.3.1, 0.3.2, 0.6.0) is on the public index. Consumers depend on it with
-  # `{:end_point_blank_elixir, "~> 0.6"}`.
+  # `mix hex.publish --yes` with no `--organization`, so every GitHub Release
+  # lands on the public index. Consumers depend on it with
+  # `{:end_point_blank_elixir, "~> 0.6.1"}` — patch-level, because this project
+  # ships breaking changes in minor releases.
   defp package do
     [
       # Proprietary. `LicenseRef-Proprietary` is the SPDX custom-license-ref
