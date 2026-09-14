@@ -24,6 +24,17 @@ defmodule EndPointBlank.AuthCacheTest do
     sync()
   end
 
+  # Stores under an explicit `now` instead of the real clock, via put/3 --
+  # `@doc false`, and only ever called from tests -- so a test can simulate
+  # writing at one point in time and reading at another, arbitrarily far
+  # apart (some of the windows below are minutes long), without sleeping
+  # the test process for real or giving anything reachable from production
+  # config control over this cache's clock. See the moduledoc.
+  defp put_at(key, value, now) do
+    AuthCache.put(key, value, now)
+    sync()
+  end
+
   describe "get/1" do
     test "is a miss for a key that was never stored", %{key: key} do
       assert AuthCache.get(key) == :miss
@@ -129,6 +140,173 @@ defmodule EndPointBlank.AuthCacheTest do
 
       Config.update(cache_ttl: 3_600)
       assert AuthCache.get(key) == :miss
+    end
+  end
+
+  describe "runtime cache_ttl changes apply to already-cached entries (sc-755)" do
+    test "(a) lowering the TTL invalidates an entry once it is older than the new window",
+         %{key: key} do
+      t0 = System.monotonic_time(:millisecond)
+      Config.update(cache_ttl: 300)
+      put_at(key, {"app-env-1", nil}, t0)
+
+      Config.update(cache_ttl: 10)
+
+      assert AuthCache.get(key, t0 + 11_000) == :miss
+
+      # A miss on a stored key must actually remove it (:ets.delete_object/2),
+      # not just report :miss while leaving the row behind -- checking the
+      # table directly is the only way to tell "deleted" from "reported
+      # stale but still sitting there".
+      assert :ets.lookup(:epb_auth_cache, key) == []
+    end
+
+    test "(b) clamp bug: falling remaining-time-to-original-expiry must not look valid again",
+         %{key: key} do
+      t0 = System.monotonic_time(:millisecond)
+      Config.update(cache_ttl: 300)
+      put_at(key, {"app-env-1", nil}, t0)
+
+      Config.update(cache_ttl: 10)
+
+      # 295s in: only 5s remain until the *original* 300s expiry, comfortably
+      # inside a naive "expires_at - now <= current_ttl (10s)" clamp, which
+      # would misread this as freshly valid. It is actually 295s old against
+      # a 10s window and must miss -- this is the exact bug the story names.
+      assert AuthCache.get(key, t0 + 295_000) == :miss
+    end
+
+    test "(c) raising the TTL never resurrects an entry that is already stale under it",
+         %{key: key} do
+      t0 = System.monotonic_time(:millisecond)
+      Config.update(cache_ttl: 10)
+      put_at(key, {"app-env-1", nil}, t0)
+
+      Config.update(cache_ttl: 300)
+
+      assert AuthCache.get(key, t0 + 11_000) == :miss
+    end
+
+    # (d) from the required list ("ttl 300 -> store -> set disabled -> MISS
+    # and entry actually removed -> set ttl back to 300 -> still MISS") is
+    # covered by "disabling the cache deletes existing entries, so
+    # re-enabling cannot resurrect them" above, in the "expiry" describe
+    # block -- word for word the same scenario. A near-duplicate test named
+    # "(d)" used to stand here; removed rather than kept alongside it.
+
+    test "(d2) a disabled READ clears every entry, not only the key looked up", %{key: key_a} do
+      key_b = key_a <> ":b"
+      Config.update(cache_ttl: 300)
+      put(key_a, {"app-env-a", nil})
+      put(key_b, {"app-env-b", nil})
+
+      Config.update(cache_ttl: 0)
+      # Only key_a is ever looked up while disabled...
+      assert AuthCache.get(key_a) == :miss
+
+      # ...but the whole table must be gone, not just key_a: a per-key
+      # delete on this branch would leave key_b sitting in the table,
+      # answering again the moment cache_ttl is restored below.
+      assert :ets.info(:epb_auth_cache, :size) == 0
+
+      Config.update(cache_ttl: 300)
+      assert AuthCache.get(key_b) == :miss
+    end
+
+    test "(d2) a disabled STORE clears every entry, not only the key being stored",
+         %{key: key_a} do
+      key_b = key_a <> ":b"
+      key_c = key_a <> ":c"
+      Config.update(cache_ttl: 300)
+      put(key_a, {"app-env-a", nil})
+      put(key_b, {"app-env-b", nil})
+
+      Config.update(cache_ttl: 0)
+      # key_c was never cached, so a per-key delete on this branch would
+      # delete nothing and leave key_a and key_b both sitting in the table.
+      put(key_c, {"app-env-c", nil})
+
+      assert :ets.info(:epb_auth_cache, :size) == 0
+
+      Config.update(cache_ttl: 300)
+      assert AuthCache.get(key_a) == :miss
+      assert AuthCache.get(key_b) == :miss
+    end
+
+    test "(d2) a disabled read of a key that was never cached still clears every OTHER entry",
+         %{key: key_a} do
+      never_cached_key = key_a <> ":never-cached"
+      Config.update(cache_ttl: 300)
+      put(key_a, {"app-env-a", nil})
+
+      Config.update(cache_ttl: 0)
+      # The looked-up key isn't even in the table -- a naive "delete the
+      # key I was asked about" implementation deletes nothing here, and
+      # key_a (never looked up) would incorrectly survive.
+      assert AuthCache.get(never_cached_key) == :miss
+      assert :ets.info(:epb_auth_cache, :size) == 0
+    end
+
+    test "(e) sanity: an unchanged TTL within the window is still a hit", %{key: key} do
+      Config.update(cache_ttl: 300)
+      put(key, {"app-env-1", nil})
+
+      assert AuthCache.get(key) == {:hit, {"app-env-1", nil}}
+    end
+
+    test "a row left by a pre-sc-755 release (0.7.0 and earlier, a 3-tuple with no written_at) " <>
+           "is a miss and is removed, not raised on",
+         %{key: key} do
+      Config.update(cache_ttl: 300)
+      legacy_expires_at = System.monotonic_time(:millisecond) + 300_000
+      # 0.7.0's row shape: {key, source_env_id, expires_at}. The table
+      # survives a hot code upgrade (only a process restart drops it), so
+      # this is what an old row looks like after upgrading to this version
+      # without restarting.
+      :ets.insert(:epb_auth_cache, {key, {"app-env-1", nil}, legacy_expires_at})
+
+      assert AuthCache.get(key) == :miss
+      assert :ets.lookup(:epb_auth_cache, key) == []
+    end
+
+    test "a legacy 3-tuple row does not crash the size-cap eviction sweep", %{key: key} do
+      Config.update(cache_ttl: 300)
+      now = System.monotonic_time(:millisecond)
+
+      filler_keys = for i <- 1..(@max_size - 1), do: "#{key}:#{i}"
+      legacy_key = "#{key}:legacy"
+
+      # This table is shared for the life of the whole test run (see the
+      # setup comment above), so bulk-filling it directly like this must
+      # clean up after itself -- an on_exit runs even if an assertion below
+      # fails, unlike inline cleanup at the end of the test body.
+      on_exit(fn ->
+        Enum.each(filler_keys, &:ets.delete(:epb_auth_cache, &1))
+        :ets.delete(:epb_auth_cache, legacy_key)
+        :ets.delete(:epb_auth_cache, key)
+      end)
+
+      # Fill directly via ETS (bypassing the GenServer -- the table is
+      # :public) so the very next handle_cast's size-cap branch runs its
+      # foldl over a table that already includes one pre-sc-755 (3-tuple)
+      # row alongside normal 4-tuple ones.
+      for k <- filler_keys,
+          do: :ets.insert(:epb_auth_cache, {k, {"app-env-1", nil}, now, now + 300_000})
+
+      :ets.insert(:epb_auth_cache, {legacy_key, {"app-env-1", nil}, now + 300_000})
+
+      # put/2 (the test helper above) is what actually exercises the
+      # vulnerable code: it casts the write, then calls :sys.get_state/1 to
+      # sync on the GenServer having processed it. If handle_cast/2's
+      # size-cap foldl crashed on the legacy row, THIS line is where the
+      # test would fail -- :sys.get_state/1 re-raises the GenServer's own
+      # exit reason (a FunctionClauseError) -- not an assertion afterward.
+      put(key, {"app-env-2", nil})
+
+      # The meaningful check once the sync above has proven the GenServer
+      # survived: that it actually processed the write correctly, not just
+      # that some process still happens to be registered under this name.
+      assert AuthCache.get(key) == {:hit, {"app-env-2", nil}}
     end
   end
 

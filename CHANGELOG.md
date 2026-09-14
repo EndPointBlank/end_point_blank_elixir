@@ -4,40 +4,72 @@
 
 ### Fixed
 
-- **Disabling `AuthCache` now actually invalidates it, instead of only
-  hiding entries (sc-660).** `cache_ttl <= 0` previously made `get/1` refuse
-  to look at the table, but left every stored row untouched; restoring
-  `cache_ttl` afterwards brought every one of them back, including a
-  decision cached before a grant was revoked. An operator disabling the
-  cache specifically to force-flush a revoked grant, then re-enabling it
-  once the caller was confirmed refused, would have that stale
-  authorization silently resurface from cache. `get/1` and `put/2` now
-  delete every entry (`:ets.delete_all_objects/1`) whenever they observe the
-  cache disabled, and `handle_cast/2` re-checks the *current* `cache_ttl`
-  before writing rather than trusting the expiry it was handed, so a write
-  that raced the disable — decided while the TTL was still live, processed
-  after it dropped to zero — can no longer land and outlive the disable it
-  raced. `EndPointBlank.AuthCache.clear/0` is now public, matching the
-  `clear()` the JS, Python and Ruby SDKs already had; Elixir was the only
-  one without it.
+- **Runtime `cache_ttl` changes now apply to already-cached entries, not
+  just to entries written after the change (sc-755).** Previously,
+  lowering `cache_ttl` (e.g. `300` to `10`) had no effect on anything
+  already cached — each entry only ever answered until the fixed
+  `expires_at` computed from the TTL in force *when it was written*, so a
+  lowered TTL could take up to the *old*, longer TTL to take effect for an
+  entry cached just before the change. `AuthCache.put/2` now also records
+  each entry's `written_at`, and `get/1` re-derives validity from the
+  `cache_ttl` in force *at read time*: a hit requires both `now <
+  expires_at` (raising `cache_ttl` never extends an entry past what it was
+  written with) and `now - written_at < current cache_ttl` (lowering it
+  applies starting on the very next read). Deliberately not implemented as
+  `expires_at - now <= current cache_ttl` (a "remaining time" clamp): once
+  enough real time has passed, an entry's remaining-until-original-expiry
+  can coincidentally fall back under a new, shorter TTL window and look
+  valid again even though it is older than that window allows — anchoring
+  both checks to the fixed `written_at` avoids that trap.
 
-  **Known remaining gap, deliberately not fixed here:** lowering `cache_ttl`
-  to a smaller *positive* value (e.g. `300` to `10`) does not shorten the
-  remaining life of entries already cached — they keep answering until
-  their original expiry. Only dropping to `0` or below (a full disable)
-  gets the immediate-effect behavior above. sc-660 named "lowering the TTL"
-  generally as the incident-response case worth covering; a correct fix for
-  the partial case needs either recomputing an entry's remaining life
-  against the *currently* configured TTL from its original write time (a
-  larger change to the expiry model — a naive "remaining ≤ current TTL"
-  clamp is subtly wrong: it lets an entry outlive a lowered TTL once enough
-  time has passed that its remaining life happens to fit back under the new,
-  shorter window) or tracking the previously observed TTL to detect and act
-  on any downward change, not just a drop to zero. Both are a bigger design
-  question than this PR's scope. None of the JS, Python or Ruby SDKs
-  implement TTL-driven invalidation at all today (they only ever consult
-  `cache_ttl` at write time), so this is a four-SDK gap, not an Elixir-only
-  one.
+- **Disabling `AuthCache` clears the *entire* cache the next time it is
+  used, not just the one entry a request happens to touch — and the same
+  is now true of a store made while disabled (sc-660, sc-755).** The only
+  caller of `AuthCache.get/1` or `put/2` in this library is
+  `EndPointBlank.Commands.EndpointAuthorize` (reached through
+  `EndPointBlank.Plug.Authorized`), so concretely: an **authorize call**
+  made while `cache_ttl <= 0` deletes every row in the table
+  (`:ets.delete_all_objects/1`), not only the key that call happened to
+  look up or write, so restoring `cache_ttl` afterwards cannot resurrect
+  *any* decision cached before that call — including one for a caller that
+  authorize call never touched. `handle_cast/2` also still re-checks the
+  *current* `cache_ttl` before writing rather than trusting the expiry it
+  was handed, so a write that raced the disable can no longer land and
+  outlive it. `EndPointBlank.AuthCache.clear/0` is public, matching the
+  `clear()` the JS, Python, Ruby and Java SDKs already had.
+
+  **Residual, deliberately not fixed here:** even on a single node, the
+  clear only happens on an authorize call (or a direct `get/1`/`put/2`)
+  made *while* that node is disabled — never at `configure/1` time itself,
+  and never merely because a request arrives. Disabling and re-enabling
+  `cache_ttl` with no authorize call (or direct `get/1`/`put/2`) landing in
+  between flushes nothing.
+
+  `cache_ttl`, "disabled", and the table are each **per BEAM node** —
+  none of them is shared or propagated across a cluster. `cache_ttl` comes
+  from this node's own `EndPointBlank.Config`, set only via `configure/1`
+  (there is no `ENDPOINTBLANK_CACHE_TTL` or other env-var fallback for
+  this setting — see `Config`'s `resolve/1`), which only ever affects the
+  node it runs on. So disabling `cache_ttl` on one node (say, node A) has
+  *no effect at all* on any other node: node B and node C are not
+  disabled, their tables are untouched, and a revoked grant already cached
+  on either of them keeps answering for up to its own TTL — there is no
+  mechanism by which they "find out" A was disabled. Flushing every node
+  requires setting `cache_ttl <= 0` on **each node individually** and
+  getting an authorize call (or a direct `get/1`/`put/2`) to land on
+  **each of them** while it is disabled. Call `AuthCache.clear/0`
+  directly, on every node, when a flush is the goal and that is not
+  something you can rely on.
+
+- **Defensive handling for a row left in the table from before this
+  release, across a hot code upgrade.** A row written by 0.7.0 or earlier
+  is a 3-element tuple with no `written_at`; this release's read path adds
+  a `written_at`-bearing 4-element shape. The ETS table itself is not
+  dropped by a code upgrade — only a process restart does that — so a host
+  that upgrades without restarting could have both shapes in the table at
+  once. `get/2` now recognizes the older shape explicitly, treating it as
+  a miss and removing it, rather than assuming every row already matches
+  the new one.
 
 ## 0.7.0
 
