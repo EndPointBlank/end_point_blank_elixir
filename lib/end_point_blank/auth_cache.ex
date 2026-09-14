@@ -5,16 +5,36 @@ defmodule EndPointBlank.AuthCache do
   Concurrent reads go directly to ETS (no GenServer round-trip).
   Mutations are serialized through the GenServer to make eviction safe.
 
-  Setting `cache_ttl` to zero or less disables the cache outright: reads
-  always miss, writes are refused (including one already queued when the
-  config changed — see `handle_cast/2`), and every entry already stored is
-  deleted, not merely hidden — see `clear/0`. That last part matters: an
-  operator who disables the cache specifically to force-flush a revoked
-  grant, then re-enables it, must not have that revoked grant's stale
-  authorization resurface from cache. This mirrors the `clear()` primitive
-  the JS, Python and Ruby SDKs already expose for the same purpose
-  (`authentication-cache.js`, `authentication_cache.py`,
-  `authentication_cache.rb`) — Elixir was the one SDK without it.
+  Setting `cache_ttl` to zero or less disables the cache: reads always
+  miss, writes are refused (including one already queued when the config
+  changed — see `handle_cast/2`), and **both** `get/1` and `put/2` clear
+  the *whole* table — every entry, not just the one being looked up or
+  written — the moment either of them observes the disabled state. Clearing
+  the whole table, not just one key, matters: an operator disabling the
+  cache specifically to force-flush one revoked grant, then re-enabling it,
+  must not have any *other* entry already cached — one that request never
+  touched — resurface once `cache_ttl` is restored. This mirrors the
+  `clear()` primitive the JS, Python, Ruby and Java SDKs of this same
+  contract expose for the same purpose (`authentication-cache.js`,
+  `authentication_cache.py`, `authentication_cache.rb`,
+  `AuthenticationCache.java`).
+
+  **Residual, deliberately not fixed here (the same in all five SDKs of
+  this contract):** the clear only runs when `get/1` or `put/2` is actually
+  *called* while `cache_ttl <= 0` — never at `configure/1` time itself, and
+  never merely because a request came in. In this library the only caller
+  of either function is `EndPointBlank.Commands.EndpointAuthorize`
+  (reached through `EndPointBlank.Plug.Authorized`), so it is specifically
+  an **authorize call** — or a direct call to `get/1`/`put/2` — made while
+  disabled that triggers the flush. A host that only ever calls
+  `EndPointBlank.Authorization.basic_header/0` or otherwise authenticates
+  without going through the authorize plug never reaches `AuthCache` at
+  all, disabled or not, and toggling `cache_ttl` around such a call flushes
+  nothing. Likewise, `EndPointBlank.configure(cache_ttl: 0)` immediately
+  followed by `EndPointBlank.configure(cache_ttl: 300)`, with no authorize
+  call (or direct `get/1`/`put/2`) in between, flushes nothing. Call
+  `clear/0` directly when the flush itself is the goal and an authorize
+  call in between is not guaranteed.
 
   ## `cache_ttl` changes apply to entries already cached (sc-755)
 
@@ -42,14 +62,24 @@ defmodule EndPointBlank.AuthCache do
   though it is older than that window allows. Anchoring both checks to the
   fixed `written_at` avoids that clamp trap.
 
+  A row left behind by a pre-sc-755 release (<= 0.7.0, three elements:
+  `{key, source_env_id, expires_at}`, no `written_at`) can still be
+  resident after a hot code upgrade that does not drop the ETS table.
+  `get/1` treats such a row as a miss and deletes it rather than raising.
+
   Cache key: `"epb_auth:{client_auth}:{path}:{method}:{app_name}"`
   Value stored: the `source_application_environment_id` from the 201 response.
+
+  `get/2` and `put/3` accept an explicit `now` (the same monotonic
+  millisecond clock `get/1`/`put/2` pass by default) and are `@doc false`:
+  they exist only so tests can exercise specific points in time
+  deterministically, without sleeping for real or giving any
+  configuration-reachable surface control over this cache's clock.
   """
 
   use GenServer
   require Logger
 
-  @app :end_point_blank_elixir
   @table :epb_auth_cache
   @max_size 1000
   @default_ttl_ms 300_000
@@ -72,15 +102,16 @@ defmodule EndPointBlank.AuthCache do
   table so a later re-enable cannot resurrect what looked disabled. See
   `clear/0`.
   """
-  def get(key) do
+  def get(key), do: get(key, System.monotonic_time(:millisecond))
+
+  @doc false
+  def get(key, now) do
     current_ttl = ttl_ms()
 
     if current_ttl <= 0 do
       clear()
       :miss
     else
-      now = now_ms()
-
       case :ets.lookup(@table, key) do
         [{^key, source_env_id, written_at, expires_at} = entry] ->
           if now < expires_at and now - written_at < current_ttl do
@@ -90,6 +121,18 @@ defmodule EndPointBlank.AuthCache do
             :miss
           end
 
+        [{^key, _source_env_id, _expires_at} = legacy_entry] ->
+          # A row written by a pre-sc-755 (<= 0.7.0) release: a 3-tuple
+          # with no written_at. The ETS table survives a hot code upgrade
+          # (only a process restart drops it), and the 4-tuple clause
+          # above can never match it, so left alone it would raise a
+          # CaseClauseError out of every future get/1 for this key and
+          # sit in the table forever — nothing else here inspects a row's
+          # shape closely enough to clean it up. Treat it like any other
+          # stale entry instead: miss, and delete it.
+          :ets.delete_object(@table, legacy_entry)
+          :miss
+
         [] ->
           :miss
       end
@@ -97,16 +140,18 @@ defmodule EndPointBlank.AuthCache do
   end
 
   @doc "Stores a successful auth result (source_env_id may be nil) under *key*."
-  def put(key, source_env_id) do
+  def put(key, source_env_id), do: put(key, source_env_id, System.monotonic_time(:millisecond))
+
+  @doc false
+  def put(key, source_env_id, now) do
     case ttl_ms() do
       ttl when ttl <= 0 ->
         clear()
         :ok
 
       ttl ->
-        written_at = now_ms()
-        expires_at = written_at + ttl
-        GenServer.cast(__MODULE__, {:put, key, source_env_id, written_at, expires_at})
+        expires_at = now + ttl
+        GenServer.cast(__MODULE__, {:put, key, source_env_id, now, expires_at})
     end
   end
 
@@ -151,24 +196,33 @@ defmodule EndPointBlank.AuthCache do
     if current_ttl <= 0 do
       {:noreply, state}
     else
-      now = now_ms()
+      now = System.monotonic_time(:millisecond)
 
       # Evict entries stale under either rule get/1 enforces on read: past
       # their original (write-time) expiry, or older than the currently
       # configured cache_ttl measured from their own written_at. This is
       # best-effort housekeeping ahead of the size-cap pass below — get/1
       # is what actually guarantees a lowered cache_ttl is honored, on every
-      # read, for anything this sweep does not immediately catch.
+      # read, for anything this sweep does not immediately catch. A legacy
+      # (pre-sc-755) 3-tuple row simply does not match this 4-tuple pattern
+      # and is left alone here; get/1 is what cleans those up (see its doc).
       :ets.select_delete(@table, [
-        {{:_, :_, :"$1", :"$2"}, [{:orelse, {:<, :"$2", now}, {:>=, {:-, now, :"$1"}, current_ttl}}],
-         [true]}
+        {{:_, :_, :"$1", :"$2"},
+         [{:orelse, {:<, :"$2", now}, {:>=, {:-, now, :"$1"}, current_ttl}}], [true]}
       ])
 
-      # Enforce size cap: remove the entry expiring soonest
+      # Enforce size cap: remove the entry expiring soonest. Uses elem/2
+      # rather than a tuple pattern so a legacy 3-tuple row left in the
+      # table by a hot upgrade (see get/1's moduledoc) cannot blow up this
+      # foldl with a FunctionClauseError -- key is always the 1st element
+      # and expires_at always the last, in both the 3- and 4-tuple shapes.
       if :ets.info(@table, :size) >= @max_size do
         oldest =
           :ets.foldl(
-            fn {k, _, _written_at, exp}, acc ->
+            fn tuple, acc ->
+              k = elem(tuple, 0)
+              exp = elem(tuple, tuple_size(tuple) - 1)
+
               case acc do
                 nil -> {k, exp}
                 {_, min_exp} when exp < min_exp -> {k, exp}
@@ -198,17 +252,5 @@ defmodule EndPointBlank.AuthCache do
     EndPointBlank.Config.get().cache_ttl * 1_000
   rescue
     ArithmeticError -> @default_ttl_ms
-  end
-
-  # The cache's clock stays `System.monotonic_time/1` in every real
-  # deployment: the offset below defaults to zero and is never set outside
-  # tests. It exists only so tests can simulate the passage of time
-  # deterministically (some of the windows this module's TTL logic has to
-  # get right are minutes long) without sleeping the test process for real
-  # or switching the cache to a different clock source. Reading it is a
-  # lock-free application-env lookup, not a process round trip, so it does
-  # not add a GenServer call to the read path in `get/1`.
-  defp now_ms do
-    System.monotonic_time(:millisecond) + Application.get_env(@app, :auth_cache_clock_offset_ms, 0)
   end
 end
