@@ -22,12 +22,13 @@ defmodule EndPointBlank.AuthCache do
   **`cache_ttl`, "disabled", and the table are each per BEAM node —
   nothing about any of them is shared or propagated across a cluster.**
   `cache_ttl` comes from `EndPointBlank.Config`, an `Agent` + ETS pair
-  started by *this node's* application supervisor; `configure/1` (or an
-  `ENDPOINTBLANK_*` env var) sets it on the node it runs on and has no
-  effect anywhere else. So "disabled" is a per-node fact — a node is
-  disabled only if *that node's own* `cache_ttl` is `<= 0` — and so is
-  this module's table (ETS is not distributed; each node's `AuthCache`
-  holds only what was cached on it).
+  started by *this node's* application supervisor; `configure/1` — the
+  only way to set `cache_ttl` (no `ENDPOINTBLANK_CACHE_TTL` or other env
+  var exists for it; see `Config`'s `resolve/1`) — sets it on the node it
+  runs on and has no effect anywhere else. So "disabled" is a per-node
+  fact — a node is disabled only if *that node's own* `cache_ttl` is
+  `<= 0` — and so is this module's table (ETS is not distributed; each
+  node's `AuthCache` holds only what was cached on it).
 
   A concrete case worth naming: an operator runs `configure(cache_ttl: 0)`
   on node A alone. Node A's own table clears the next time an authorize
@@ -46,7 +47,7 @@ defmodule EndPointBlank.AuthCache do
   this contract):** even on one single node, the clear only runs when
   `get/1` or `put/2` is actually *called* while that node's own
   `cache_ttl <= 0` — never at `configure/1` time itself, and never merely
-  because a request came in. In this library the only caller of either
+  because traffic arrives. In this library the only caller of either
   function is `EndPointBlank.Commands.EndpointAuthorize` (reached through
   `EndPointBlank.Plug.Authorized`), so concretely it takes an **authorize
   call** — or a direct call to `get/1`/`put/2` — landing on a given node
@@ -189,10 +190,12 @@ defmodule EndPointBlank.AuthCache do
   needs serializing to stay consistent), wiping the whole table is one atomic
   operation with nothing to coordinate.
 
-  Called automatically whenever the cache is disabled (`cache_ttl <= 0`) —
-  see `get/1` and `put/2`. Also exposed publicly so a host application can
-  force-flush the cache directly, matching the `clear()` the JS, Python and
-  Ruby SDKs already provide for that purpose.
+  Called automatically whenever a `get/1` or `put/2` call *observes*
+  `cache_ttl <= 0` on this node — not continuously while it is disabled,
+  and not on any other node (see the moduledoc). Also exposed publicly so
+  a host application can force-flush the cache directly, on demand,
+  matching the `clear()` the JS, Python, Ruby and Java SDKs already
+  provide for that purpose.
   """
   def clear do
     :ets.delete_all_objects(@table)

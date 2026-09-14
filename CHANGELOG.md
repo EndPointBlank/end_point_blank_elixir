@@ -36,28 +36,30 @@
   *current* `cache_ttl` before writing rather than trusting the expiry it
   was handed, so a write that raced the disable can no longer land and
   outlive it. `EndPointBlank.AuthCache.clear/0` is public, matching the
-  `clear()` the JS, Python and Ruby SDKs already had.
+  `clear()` the JS, Python, Ruby and Java SDKs already had.
 
   **Residual, deliberately not fixed here:** even on a single node, the
   clear only happens on an authorize call (or a direct `get/1`/`put/2`)
   made *while* that node is disabled — never at `configure/1` time itself,
-  and never merely because some unrelated request came in. Disabling and
-  re-enabling `cache_ttl` with no authorize call landing in between
-  flushes nothing.
+  and never merely because a request arrives. Disabling and re-enabling
+  `cache_ttl` with no authorize call (or direct `get/1`/`put/2`) landing in
+  between flushes nothing.
 
   `cache_ttl`, "disabled", and the table are each **per BEAM node** —
   none of them is shared or propagated across a cluster. `cache_ttl` comes
-  from this node's own `EndPointBlank.Config`; `configure/1` (or an
-  `ENDPOINTBLANK_*` env var) only ever affects the node it runs on. So
-  disabling `cache_ttl` on one node (say, node A) has *no effect at all* on
-  any other node: node B and node C are not disabled, their tables are
-  untouched, and a revoked grant already cached on either of them keeps
-  answering for up to its own TTL — there is no mechanism by which they
-  "find out" A was disabled. Flushing every node requires setting
-  `cache_ttl <= 0` on **each node individually** and getting an authorize
-  call (or a direct `get/1`/`put/2`) to land on **each of them** while it
-  is disabled. Call `AuthCache.clear/0` directly, on every node, when a
-  flush is the goal and that is not something you can rely on.
+  from this node's own `EndPointBlank.Config`, set only via `configure/1`
+  (there is no `ENDPOINTBLANK_CACHE_TTL` or other env-var fallback for
+  this setting — see `Config`'s `resolve/1`), which only ever affects the
+  node it runs on. So disabling `cache_ttl` on one node (say, node A) has
+  *no effect at all* on any other node: node B and node C are not
+  disabled, their tables are untouched, and a revoked grant already cached
+  on either of them keeps answering for up to its own TTL — there is no
+  mechanism by which they "find out" A was disabled. Flushing every node
+  requires setting `cache_ttl <= 0` on **each node individually** and
+  getting an authorize call (or a direct `get/1`/`put/2`) to land on
+  **each of them** while it is disabled. Call `AuthCache.clear/0`
+  directly, on every node, when a flush is the goal and that is not
+  something you can rely on.
 
 - **Defensive handling for a row left in the table from before this
   release, across a hot code upgrade.** A row written by 0.7.0 or earlier

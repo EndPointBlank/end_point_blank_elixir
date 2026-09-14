@@ -187,18 +187,12 @@ defmodule EndPointBlank.AuthCacheTest do
       assert AuthCache.get(key, t0 + 11_000) == :miss
     end
 
-    test "(d) disabling clears the entry, and restoring the old TTL does not resurrect it",
-         %{key: key} do
-      Config.update(cache_ttl: 300)
-      put(key, {"app-env-1", nil})
-
-      Config.update(cache_ttl: 0)
-      assert AuthCache.get(key) == :miss
-      assert :ets.lookup(:epb_auth_cache, key) == []
-
-      Config.update(cache_ttl: 300)
-      assert AuthCache.get(key) == :miss
-    end
+    # (d) from the required list ("ttl 300 -> store -> set disabled -> MISS
+    # and entry actually removed -> set ttl back to 300 -> still MISS") is
+    # covered by "disabling the cache deletes existing entries, so
+    # re-enabling cannot resurrect them" above, in the "expiry" describe
+    # block -- word for word the same scenario. A near-duplicate test named
+    # "(d)" used to stand here; removed rather than kept alongside it.
 
     test "(d2) a disabled READ clears every entry, not only the key looked up", %{key: key_a} do
       key_b = key_a <> ":b"

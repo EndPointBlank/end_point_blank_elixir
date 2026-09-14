@@ -240,8 +240,9 @@ Under the hood it:
 
   The scope: `:cache_ttl`, "disabled", and the cache table are each
   **per BEAM node** — none of them is shared or propagated across a
-  cluster. `:cache_ttl` comes from this node's own configuration
-  (`configure/1`, or an `ENDPOINTBLANK_*` env var), which only ever affects
+  cluster. `:cache_ttl` comes from this node's own configuration, set only
+  via `configure/1` (there is no `ENDPOINTBLANK_CACHE_TTL` or other env
+  var for it — see the settings table above), which only ever affects
   the node it runs on, and the cache is an ETS table, which ETS never
   distributes. So running `configure(cache_ttl: 0)` on one node (say, node
   A) does **not** disable node B or node C at all: their `:cache_ttl` is
