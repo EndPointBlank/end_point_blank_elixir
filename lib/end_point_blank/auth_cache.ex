@@ -19,6 +19,17 @@ defmodule EndPointBlank.AuthCache do
   `authentication_cache.py`, `authentication_cache.rb`,
   `AuthenticationCache.java`).
 
+  **The table, and therefore the clear, is local to one BEAM node.** ETS is
+  not distributed: a clustered or multi-instance deployment runs one
+  `AuthCache` — one table — per node, each with its own copy of whatever
+  was cached. An authorize call (or a direct `get/1`/`put/2`) made while
+  disabled clears *that node's* table only; it is not a cluster-wide flush,
+  and it cannot be — each node only ever finds out `cache_ttl` dropped when
+  something on that node calls this module while it is disabled. A revoked
+  grant is not force-flushed everywhere until every node has independently
+  observed such a call while disabled; do not treat "disable, one request,
+  re-enable" as a guaranteed cluster-wide flush.
+
   **Residual, deliberately not fixed here (the same in all five SDKs of
   this contract):** the clear only runs when `get/1` or `put/2` is actually
   *called* while `cache_ttl <= 0` — never at `configure/1` time itself, and
@@ -26,15 +37,16 @@ defmodule EndPointBlank.AuthCache do
   of either function is `EndPointBlank.Commands.EndpointAuthorize`
   (reached through `EndPointBlank.Plug.Authorized`), so it is specifically
   an **authorize call** — or a direct call to `get/1`/`put/2` — made while
-  disabled that triggers the flush. A host that only ever calls
+  disabled that triggers the flush, and only on the node that call landed
+  on. A host that only ever calls
   `EndPointBlank.Authorization.basic_header/0` or otherwise authenticates
   without going through the authorize plug never reaches `AuthCache` at
   all, disabled or not, and toggling `cache_ttl` around such a call flushes
   nothing. Likewise, `EndPointBlank.configure(cache_ttl: 0)` immediately
   followed by `EndPointBlank.configure(cache_ttl: 300)`, with no authorize
-  call (or direct `get/1`/`put/2`) in between, flushes nothing. Call
-  `clear/0` directly when the flush itself is the goal and an authorize
-  call in between is not guaranteed.
+  call (or direct `get/1`/`put/2`) in between, flushes nothing on any node.
+  Call `clear/0` directly, on every node, when the flush itself is the goal
+  and an intervening authorize call on each of them is not guaranteed.
 
   ## `cache_ttl` changes apply to entries already cached (sc-755)
 

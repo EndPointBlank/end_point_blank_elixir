@@ -230,12 +230,23 @@ Under the hood it:
   already stored, not merely the one it looked up — so raising `:cache_ttl`
   back up afterwards cannot resurrect anything that was cached before that
   call. This is the SDK's answer to "force-flush a revoked grant", but note
-  the trigger: the flush happens on the next authorize call (or a direct
+  two things before relying on it: the trigger, and the scope.
+
+  The trigger: the flush happens on the next authorize call (or a direct
   `EndPointBlank.AuthCache.get/1`/`put/2`) made while `:cache_ttl` is `0`,
   not at the moment `configure/1` sets it. Disabling and re-enabling with no
-  authorize call in between flushes nothing. Call
-  `EndPointBlank.AuthCache.clear/0` directly when the flush itself is the
-  goal and an authorize call in between the two `configure/1`s is not
+  authorize call in between flushes nothing.
+
+  The scope: the cache is an ETS table, which is local to one BEAM node.
+  In a clustered or multi-instance deployment there is one `AuthCache` per
+  node, and disabling from one node clears *that node's* table only — it
+  is not a cluster-wide flush, and cannot be one, because a node only
+  learns `:cache_ttl` dropped when an authorize call (or a direct
+  `get/1`/`put/2`) lands on it while disabled. "Disable, one request,
+  re-enable" is not a guaranteed flush across every node; it flushes
+  whichever node(s) actually took a call while disabled. Call
+  `EndPointBlank.AuthCache.clear/0` directly, on every node, when the flush
+  itself is the goal and an intervening authorize call on each one is not
   guaranteed.
 - Stores the `source_application_environment_id` from the response's `data`
   list in `EndPointBlank.RequestStore` for the rest of the request lifecycle

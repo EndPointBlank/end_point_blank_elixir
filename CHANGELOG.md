@@ -42,9 +42,13 @@
   authorize call (or a direct `get/1`/`put/2`) made *while* disabled —
   never at `configure/1` time itself, and never merely because some
   unrelated request came in. Disabling and re-enabling `cache_ttl` with no
-  authorize call in between flushes nothing. Call `AuthCache.clear/0`
-  directly when the flush itself is the goal and an intervening authorize
-  call is not guaranteed.
+  authorize call in between flushes nothing. The table is also local to one
+  BEAM node (ETS is not distributed): in a clustered or multi-instance
+  deployment, disabling clears *that node's* table only, and it is not a
+  cluster-wide flush — each node only clears once an authorize call (or a
+  direct `get/1`/`put/2`) lands on *it* while disabled. Call
+  `AuthCache.clear/0` directly, on every node, when the flush itself is the
+  goal and an intervening authorize call on each one is not guaranteed.
 
 - **A cache row left by a pre-sc-755 release (0.7.0 and earlier — a
   3-element tuple with no `written_at`) surviving a hot code upgrade is now
