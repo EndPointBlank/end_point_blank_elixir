@@ -4,6 +4,28 @@
 
 ### Fixed
 
+- **Runtime `cache_ttl` changes now apply to already-cached entries, not
+  just to entries written after the change (sc-755).** Previously,
+  lowering `cache_ttl` (e.g. `300` to `10`) had no effect on anything
+  already cached — each entry only ever answered until the fixed
+  `expires_at` computed from the TTL in force *when it was written*, so a
+  lowered TTL could take up to the *old*, longer TTL to take effect for an
+  entry cached just before the change. `AuthCache.get/1` now also records
+  each entry's `written_at` and re-derives validity from the `cache_ttl` in
+  force *at read time*: a hit requires both `now < expires_at` (raising
+  `cache_ttl` never extends an entry past what it was written with) and
+  `now - written_at < current cache_ttl` (lowering it applies starting on
+  the very next read). Deliberately not implemented as `expires_at - now <=
+  current cache_ttl` (a "remaining time" clamp): once enough real time has
+  passed, an entry's remaining-until-original-expiry can coincidentally
+  fall back under a new, shorter TTL window and look valid again even
+  though it is older than that window allows — anchoring both checks to
+  the fixed `written_at` avoids that trap. This subsumes sc-660's "disable
+  actually clears" behavior as the extreme case (`cache_ttl <= 0`) and
+  keeps it unchanged. None of the JS, Python or Ruby SDKs implement
+  TTL-driven invalidation on read at all today, so this remains a
+  four-SDK gap outside of Elixir; Java is unconfirmed.
+
 - **Disabling `AuthCache` now actually invalidates it, instead of only
   hiding entries (sc-660).** `cache_ttl <= 0` previously made `get/1` refuse
   to look at the table, but left every stored row untouched; restoring
@@ -20,24 +42,6 @@
   raced. `EndPointBlank.AuthCache.clear/0` is now public, matching the
   `clear()` the JS, Python and Ruby SDKs already had; Elixir was the only
   one without it.
-
-  **Known remaining gap, deliberately not fixed here:** lowering `cache_ttl`
-  to a smaller *positive* value (e.g. `300` to `10`) does not shorten the
-  remaining life of entries already cached — they keep answering until
-  their original expiry. Only dropping to `0` or below (a full disable)
-  gets the immediate-effect behavior above. sc-660 named "lowering the TTL"
-  generally as the incident-response case worth covering; a correct fix for
-  the partial case needs either recomputing an entry's remaining life
-  against the *currently* configured TTL from its original write time (a
-  larger change to the expiry model — a naive "remaining ≤ current TTL"
-  clamp is subtly wrong: it lets an entry outlive a lowered TTL once enough
-  time has passed that its remaining life happens to fit back under the new,
-  shorter window) or tracking the previously observed TTL to detect and act
-  on any downward change, not just a drop to zero. Both are a bigger design
-  question than this PR's scope. None of the JS, Python or Ruby SDKs
-  implement TTL-driven invalidation at all today (they only ever consult
-  `cache_ttl` at write time), so this is a four-SDK gap, not an Elixir-only
-  one.
 
 ## 0.7.0
 

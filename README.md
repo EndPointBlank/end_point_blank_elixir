@@ -220,12 +220,17 @@ Under the hood it:
 - Caches successful authorizations for up to `:cache_ttl` seconds
   (`EndPointBlank.AuthCache`), keyed on the caller's own auth header, path,
   HTTP method, and `app_name` — repeat calls skip the network round trip.
-  Setting `:cache_ttl` to `0` (or lower) disables the cache: every lookup
-  misses and every entry already stored is deleted outright, not merely
-  hidden, so raising `:cache_ttl` back up afterwards cannot resurrect a
-  decision made before the disable. This is the SDK's answer to "force-flush
-  a revoked grant" — call `EndPointBlank.AuthCache.clear/0` directly for the
-  same effect without touching the TTL setting.
+  `:cache_ttl` is re-checked on every read, not just applied to entries
+  written after it changes: lowering it shortens the remaining life of
+  everything already cached (an entry never outlives whichever is smaller,
+  the TTL it was written with or the TTL currently configured), and raising
+  it never extends an entry past what it was written with. Setting
+  `:cache_ttl` to `0` (or lower) disables the cache outright: every lookup
+  misses and every entry already stored is deleted, not merely hidden, so
+  raising `:cache_ttl` back up afterwards cannot resurrect a decision made
+  before the disable. This is the SDK's answer to "force-flush a revoked
+  grant" — call `EndPointBlank.AuthCache.clear/0` directly for the same
+  effect without touching the TTL setting.
 - Stores the `source_application_environment_id` from the response's `data`
   list in `EndPointBlank.RequestStore` for the rest of the request lifecycle
   (it's attached to response/log/error payloads).

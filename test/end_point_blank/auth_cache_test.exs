@@ -6,7 +6,15 @@ defmodule EndPointBlank.AuthCacheTest do
   @max_size 1_000
 
   setup do
-    on_exit(&Config.reset/0)
+    on_exit(fn ->
+      Config.reset()
+      # Reset the clock offset `advance/1` sets, not just for this module's
+      # own sake: it is a bare application env, global to the whole run, and
+      # a value left behind here would age every entry any other test file
+      # writes afterwards (e.g. EndpointAuthorizeTest, which also exercises
+      # this cache).
+      Application.delete_env(:end_point_blank_elixir, :auth_cache_clock_offset_ms)
+    end)
 
     # The table is process-wide and shared for the life of the run, including
     # by other test files that exercise AuthCache (e.g. EndpointAuthorizeTest).
@@ -22,6 +30,17 @@ defmodule EndPointBlank.AuthCacheTest do
   defp put(key, value) do
     AuthCache.put(key, value)
     sync()
+  end
+
+  # Simulates `ms` milliseconds passing without sleeping the test process for
+  # real (some of these windows are minutes long). AuthCache's clock is
+  # `System.monotonic_time/1`, offset by an application-env value that
+  # defaults to zero in every real deployment (see `now_ms/0` in the lib) --
+  # this suite is the only thing that ever sets it, and only to advance,
+  # cumulatively, never to rewind.
+  defp advance(ms) do
+    current = Application.get_env(:end_point_blank_elixir, :auth_cache_clock_offset_ms, 0)
+    Application.put_env(:end_point_blank_elixir, :auth_cache_clock_offset_ms, current + ms)
   end
 
   describe "get/1" do
@@ -129,6 +148,66 @@ defmodule EndPointBlank.AuthCacheTest do
 
       Config.update(cache_ttl: 3_600)
       assert AuthCache.get(key) == :miss
+    end
+  end
+
+  describe "runtime cache_ttl changes apply to already-cached entries (sc-755)" do
+    test "(a) lowering the TTL invalidates an entry once it is older than the new window",
+         %{key: key} do
+      Config.update(cache_ttl: 300)
+      put(key, {"app-env-1", nil})
+
+      Config.update(cache_ttl: 10)
+      advance(11_000)
+
+      assert AuthCache.get(key) == :miss
+    end
+
+    test "(b) clamp bug: falling remaining-time-to-original-expiry must not look valid again",
+         %{key: key} do
+      Config.update(cache_ttl: 300)
+      put(key, {"app-env-1", nil})
+
+      Config.update(cache_ttl: 10)
+
+      # 295s in: only 5s remain until the *original* 300s expiry, comfortably
+      # inside a naive "expires_at - now <= current_ttl (10s)" clamp, which
+      # would misread this as freshly valid. It is actually 295s old against
+      # a 10s window and must miss -- this is the exact bug the story names.
+      advance(295_000)
+
+      assert AuthCache.get(key) == :miss
+    end
+
+    test "(c) raising the TTL never resurrects an entry that is already stale under it",
+         %{key: key} do
+      Config.update(cache_ttl: 10)
+      put(key, {"app-env-1", nil})
+
+      Config.update(cache_ttl: 300)
+      advance(11_000)
+
+      assert AuthCache.get(key) == :miss
+    end
+
+    test "(d) disabling clears the entry, and restoring the old TTL does not resurrect it",
+         %{key: key} do
+      Config.update(cache_ttl: 300)
+      put(key, {"app-env-1", nil})
+
+      Config.update(cache_ttl: 0)
+      assert AuthCache.get(key) == :miss
+      assert :ets.lookup(:epb_auth_cache, key) == []
+
+      Config.update(cache_ttl: 300)
+      assert AuthCache.get(key) == :miss
+    end
+
+    test "(e) sanity: an unchanged TTL within the window is still a hit", %{key: key} do
+      Config.update(cache_ttl: 300)
+      put(key, {"app-env-1", nil})
+
+      assert AuthCache.get(key) == {:hit, {"app-env-1", nil}}
     end
   end
 
