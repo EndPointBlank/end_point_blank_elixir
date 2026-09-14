@@ -38,24 +38,36 @@
   outlive it. `EndPointBlank.AuthCache.clear/0` is public, matching the
   `clear()` the JS, Python and Ruby SDKs already had.
 
-  **Residual, deliberately not fixed here:** the clear only happens on an
-  authorize call (or a direct `get/1`/`put/2`) made *while* disabled —
-  never at `configure/1` time itself, and never merely because some
-  unrelated request came in. Disabling and re-enabling `cache_ttl` with no
-  authorize call in between flushes nothing. The table is also local to one
-  BEAM node (ETS is not distributed): in a clustered or multi-instance
-  deployment, disabling clears *that node's* table only, and it is not a
-  cluster-wide flush — each node only clears once an authorize call (or a
-  direct `get/1`/`put/2`) lands on *it* while disabled. Call
-  `AuthCache.clear/0` directly, on every node, when the flush itself is the
-  goal and an intervening authorize call on each one is not guaranteed.
+  **Residual, deliberately not fixed here:** even on a single node, the
+  clear only happens on an authorize call (or a direct `get/1`/`put/2`)
+  made *while* that node is disabled — never at `configure/1` time itself,
+  and never merely because some unrelated request came in. Disabling and
+  re-enabling `cache_ttl` with no authorize call landing in between
+  flushes nothing.
 
-- **A cache row left by a pre-sc-755 release (0.7.0 and earlier — a
-  3-element tuple with no `written_at`) surviving a hot code upgrade is now
-  treated as a miss and removed, instead of raising `CaseClauseError` out
-  of every future authorize call for that key.** The ETS table is not
-  dropped by a code upgrade, only by a process restart, so a row written
-  before this release could still be resident afterward.
+  `cache_ttl`, "disabled", and the table are each **per BEAM node** —
+  none of them is shared or propagated across a cluster. `cache_ttl` comes
+  from this node's own `EndPointBlank.Config`; `configure/1` (or an
+  `ENDPOINTBLANK_*` env var) only ever affects the node it runs on. So
+  disabling `cache_ttl` on one node (say, node A) has *no effect at all* on
+  any other node: node B and node C are not disabled, their tables are
+  untouched, and a revoked grant already cached on either of them keeps
+  answering for up to its own TTL — there is no mechanism by which they
+  "find out" A was disabled. Flushing every node requires setting
+  `cache_ttl <= 0` on **each node individually** and getting an authorize
+  call (or a direct `get/1`/`put/2`) to land on **each of them** while it
+  is disabled. Call `AuthCache.clear/0` directly, on every node, when a
+  flush is the goal and that is not something you can rely on.
+
+- **Defensive handling for a row left in the table from before this
+  release, across a hot code upgrade.** A row written by 0.7.0 or earlier
+  is a 3-element tuple with no `written_at`; this release's read path adds
+  a `written_at`-bearing 4-element shape. The ETS table itself is not
+  dropped by a code upgrade — only a process restart does that — so a host
+  that upgrades without restarting could have both shapes in the table at
+  once. `get/2` now recognizes the older shape explicitly, treating it as
+  a miss and removing it, rather than assuming every row already matches
+  the new one.
 
 ## 0.7.0
 

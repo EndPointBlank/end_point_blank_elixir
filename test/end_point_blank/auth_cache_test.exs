@@ -301,9 +301,18 @@ defmodule EndPointBlank.AuthCacheTest do
 
       :ets.insert(:epb_auth_cache, {legacy_key, {"app-env-1", nil}, now + 300_000})
 
+      # put/2 (the test helper above) is what actually exercises the
+      # vulnerable code: it casts the write, then calls :sys.get_state/1 to
+      # sync on the GenServer having processed it. If handle_cast/2's
+      # size-cap foldl crashed on the legacy row, THIS line is where the
+      # test would fail -- :sys.get_state/1 re-raises the GenServer's own
+      # exit reason (a FunctionClauseError) -- not an assertion afterward.
       put(key, {"app-env-2", nil})
 
-      assert Process.alive?(Process.whereis(AuthCache))
+      # The meaningful check once the sync above has proven the GenServer
+      # survived: that it actually processed the write correctly, not just
+      # that some process still happens to be registered under this name.
+      assert AuthCache.get(key) == {:hit, {"app-env-2", nil}}
     end
   end
 

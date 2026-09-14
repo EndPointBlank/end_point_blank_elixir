@@ -19,34 +19,47 @@ defmodule EndPointBlank.AuthCache do
   `authentication_cache.py`, `authentication_cache.rb`,
   `AuthenticationCache.java`).
 
-  **The table, and therefore the clear, is local to one BEAM node.** ETS is
-  not distributed: a clustered or multi-instance deployment runs one
-  `AuthCache` — one table — per node, each with its own copy of whatever
-  was cached. An authorize call (or a direct `get/1`/`put/2`) made while
-  disabled clears *that node's* table only; it is not a cluster-wide flush,
-  and it cannot be — each node only ever finds out `cache_ttl` dropped when
-  something on that node calls this module while it is disabled. A revoked
-  grant is not force-flushed everywhere until every node has independently
-  observed such a call while disabled; do not treat "disable, one request,
-  re-enable" as a guaranteed cluster-wide flush.
+  **`cache_ttl`, "disabled", and the table are each per BEAM node —
+  nothing about any of them is shared or propagated across a cluster.**
+  `cache_ttl` comes from `EndPointBlank.Config`, an `Agent` + ETS pair
+  started by *this node's* application supervisor; `configure/1` (or an
+  `ENDPOINTBLANK_*` env var) sets it on the node it runs on and has no
+  effect anywhere else. So "disabled" is a per-node fact — a node is
+  disabled only if *that node's own* `cache_ttl` is `<= 0` — and so is
+  this module's table (ETS is not distributed; each node's `AuthCache`
+  holds only what was cached on it).
+
+  A concrete case worth naming: an operator runs `configure(cache_ttl: 0)`
+  on node A alone. Node A's own table clears the next time an authorize
+  call (or a direct `get/1`/`put/2`) lands on it. Nodes B and C are
+  completely unaffected — their `cache_ttl` is still whatever it was, they
+  are not "disabled" by any definition this module has, and a revoked
+  grant already cached on either of them keeps answering for up to its own
+  TTL. There is no mechanism here, and none planned, by which B or C
+  "find out" A was disabled. Flushing every node requires configuring
+  `cache_ttl <= 0` on **every node individually** and then getting an
+  authorize call (or a direct `get/1`/`put/2`) to land on **each of
+  them** while it is; nothing here makes that happen for you, and nothing
+  here can turn a single disable into a cluster-wide guarantee.
 
   **Residual, deliberately not fixed here (the same in all five SDKs of
-  this contract):** the clear only runs when `get/1` or `put/2` is actually
-  *called* while `cache_ttl <= 0` — never at `configure/1` time itself, and
-  never merely because a request came in. In this library the only caller
-  of either function is `EndPointBlank.Commands.EndpointAuthorize`
-  (reached through `EndPointBlank.Plug.Authorized`), so it is specifically
-  an **authorize call** — or a direct call to `get/1`/`put/2` — made while
-  disabled that triggers the flush, and only on the node that call landed
-  on. A host that only ever calls
-  `EndPointBlank.Authorization.basic_header/0` or otherwise authenticates
-  without going through the authorize plug never reaches `AuthCache` at
-  all, disabled or not, and toggling `cache_ttl` around such a call flushes
-  nothing. Likewise, `EndPointBlank.configure(cache_ttl: 0)` immediately
-  followed by `EndPointBlank.configure(cache_ttl: 300)`, with no authorize
-  call (or direct `get/1`/`put/2`) in between, flushes nothing on any node.
-  Call `clear/0` directly, on every node, when the flush itself is the goal
-  and an intervening authorize call on each of them is not guaranteed.
+  this contract):** even on one single node, the clear only runs when
+  `get/1` or `put/2` is actually *called* while that node's own
+  `cache_ttl <= 0` — never at `configure/1` time itself, and never merely
+  because a request came in. In this library the only caller of either
+  function is `EndPointBlank.Commands.EndpointAuthorize` (reached through
+  `EndPointBlank.Plug.Authorized`), so concretely it takes an **authorize
+  call** — or a direct call to `get/1`/`put/2` — landing on a given node
+  while that node is disabled to flush that node's table. A host that only
+  ever calls `EndPointBlank.Authorization.basic_header/0` or otherwise
+  authenticates without going through the authorize plug never reaches
+  `AuthCache` at all, disabled or not, and toggling `cache_ttl` around such
+  a call flushes nothing. Likewise, on any one node,
+  `EndPointBlank.configure(cache_ttl: 0)` immediately followed by
+  `EndPointBlank.configure(cache_ttl: 300)`, with no authorize call (or
+  direct `get/1`/`put/2`) landing on that node in between, flushes nothing.
+  Call `clear/0` directly, on every node, when a flush is the goal and an
+  intervening authorize call on each one is not something you can rely on.
 
   ## `cache_ttl` changes apply to entries already cached (sc-755)
 
@@ -79,7 +92,7 @@ defmodule EndPointBlank.AuthCache do
   resident after a hot code upgrade that does not drop the ETS table.
   `get/1` treats such a row as a miss and deletes it rather than raising.
 
-  Cache key: `"epb_auth:{client_auth}:{path}:{method}:{app_name}"`
+  Cache key: `"epb_auth:{client_auth}:{path}:{method}:{app_name}:{version}"`
   Value stored: the `source_application_environment_id` from the 201 response.
 
   `get/2` and `put/3` accept an explicit `now` (the same monotonic

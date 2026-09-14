@@ -219,7 +219,8 @@ Under the hood it:
   there is nothing that can go stale for a `401` to retry.
 - Caches successful authorizations for up to `:cache_ttl` seconds
   (`EndPointBlank.AuthCache`), keyed on the caller's own auth header, path,
-  HTTP method, and `app_name` — repeat calls skip the network round trip.
+  HTTP method, `app_name`, and API version — repeat calls skip the network
+  round trip.
   `:cache_ttl` is re-checked on every read, not just applied to entries
   written after it changes: lowering it shortens the remaining life of
   everything already cached (an entry never outlives whichever is smaller,
@@ -237,17 +238,22 @@ Under the hood it:
   not at the moment `configure/1` sets it. Disabling and re-enabling with no
   authorize call in between flushes nothing.
 
-  The scope: the cache is an ETS table, which is local to one BEAM node.
-  In a clustered or multi-instance deployment there is one `AuthCache` per
-  node, and disabling from one node clears *that node's* table only — it
-  is not a cluster-wide flush, and cannot be one, because a node only
-  learns `:cache_ttl` dropped when an authorize call (or a direct
-  `get/1`/`put/2`) lands on it while disabled. "Disable, one request,
-  re-enable" is not a guaranteed flush across every node; it flushes
-  whichever node(s) actually took a call while disabled. Call
-  `EndPointBlank.AuthCache.clear/0` directly, on every node, when the flush
-  itself is the goal and an intervening authorize call on each one is not
-  guaranteed.
+  The scope: `:cache_ttl`, "disabled", and the cache table are each
+  **per BEAM node** — none of them is shared or propagated across a
+  cluster. `:cache_ttl` comes from this node's own configuration
+  (`configure/1`, or an `ENDPOINTBLANK_*` env var), which only ever affects
+  the node it runs on, and the cache is an ETS table, which ETS never
+  distributes. So running `configure(cache_ttl: 0)` on one node (say, node
+  A) does **not** disable node B or node C at all: their `:cache_ttl` is
+  whatever it already was, they are not "disabled" by any definition this
+  module has, and a revoked grant already cached on either of them keeps
+  answering for up to its own TTL — nothing here makes B or C "find out"
+  that A was disabled, no matter how much traffic reaches them. Flushing
+  every node requires setting `:cache_ttl <= 0` on **each node
+  individually** and getting an authorize call (or a direct
+  `get/1`/`put/2`) to land on **each of them** while it is disabled. Call
+  `EndPointBlank.AuthCache.clear/0` directly, on every node, when a flush
+  is the goal and that is not something you can rely on.
 - Stores the `source_application_environment_id` from the response's `data`
   list in `EndPointBlank.RequestStore` for the rest of the request lifecycle
   (it's attached to response/log/error payloads).

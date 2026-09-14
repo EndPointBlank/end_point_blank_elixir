@@ -22,8 +22,8 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
   Authorizes `conn` against the EndPointBlank service.
 
   Successful results are cached in `AuthCache` keyed on
-  `(client_auth, path, method, app_name)`. Cache hits skip the network
-  call entirely and return immediately.
+  `(client_auth, path, method, app_name, version)`. Cache hits skip the
+  network call entirely and return immediately.
 
   Returns `{:ok, conn}` on success (HTTP 201), with the
   `source_application_environment_id` stored in `RequestStore`.
