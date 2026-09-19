@@ -50,6 +50,7 @@ defmodule EndPointBlank.Config do
 
   @default_base_url "https://in.endpointblank.com"
   @default_log_base_url "https://log.endpointblank.com"
+  @default_cache_ttl 300
 
   # The read path. Named for this module so a stray table is attributable at a
   # glance in `:ets.i/0`; the Agent process owns it and is the only writer.
@@ -74,7 +75,7 @@ defmodule EndPointBlank.Config do
     :log_base_url,
     log_mode: :direct,
     worker_count: 4,
-    cache_ttl: 300,
+    cache_ttl: @default_cache_ttl,
     trust_proxy_headers: true,
     masking_rules: []
   ]
@@ -90,6 +91,18 @@ defmodule EndPointBlank.Config do
                 {key, _default} -> key
                 key when is_atom(key) -> key
               end)
+
+  # sc-970: the one definition of a valid `cache_ttl`, in seconds. `0` is
+  # valid and disables the authorization cache. Both places that check the
+  # rule use this guard: `validate_cache_ttl!/1` below, when `configure/1` is
+  # called, and `EndPointBlank.AuthCache`'s `ttl_ms/0`, when the stored value
+  # is read. That way the two cannot disagree about what is valid.
+  # `is_integer/1` is not redundant next to `>= 0`: in Erlang term order,
+  # `nil`, `true` and every other atom compare greater than any number.
+  #
+  # Public only so AuthCache can `require` it; not part of the library's API.
+  @doc false
+  defguard is_valid_cache_ttl(ttl) when is_integer(ttl) and ttl >= 0
 
   def start_link(_opts) do
     Agent.start_link(&init_store/0, name: __MODULE__)
@@ -145,7 +158,15 @@ defmodule EndPointBlank.Config do
   silent fallbacks; a bad `configure/1` call is a boot-time bug and should
   crash the boot.
 
-  The check runs in the calling process, *before* `Agent.update/2` is called
+  Also raises `ArgumentError` if `:cache_ttl` is given with a value that is
+  not a non-negative integer — an explicit `nil`, a negative number, a float
+  or a string (sc-970). Omit `:cache_ttl` for the default of 300 seconds;
+  `0` disables the authorization cache. This is all-or-nothing in the same
+  way. Before sc-970, `nil` and strings were stored as given and silently
+  treated as 300 when the cache was first used, a float was used as a
+  fractional TTL, and a negative number silently disabled the cache.
+
+  Both checks run in the calling process, *before* `Agent.update/2` is called
   — never inside the function passed to it. `update/1` is called from
   arbitrary host code (usually `EndPointBlank.configure/1` at boot), and an
   exception raised inside `Agent.update/2`'s function crashes the Agent
@@ -160,6 +181,8 @@ defmodule EndPointBlank.Config do
   def update(opts) when is_list(opts) do
     case unknown_keys(opts) do
       [] ->
+        validate_cache_ttl!(opts)
+
         Agent.update(__MODULE__, fn config ->
           opts
           |> Enum.reduce(config, fn {k, v}, acc -> Map.put(acc, k, v) end)
@@ -179,6 +202,31 @@ defmodule EndPointBlank.Config do
     |> Keyword.keys()
     |> Enum.uniq()
     |> Enum.reject(&(&1 in @valid_keys))
+  end
+
+  # sc-970: the same rule in all five SDKs (JS, Java, Elixir, Python, Rails).
+  # Omitting `:cache_ttl` keeps the default of 300 seconds and `0` disables the
+  # cache; anything that is not a non-negative integer is refused here, at
+  # configure time, rather than reinterpreted when the cache is first used.
+  #
+  # Every occurrence is checked, not just the first (`Keyword.get/2`): opts are
+  # applied in order, so it is the *last* `:cache_ttl` in a repeated-key list
+  # that would be stored.
+  defp validate_cache_ttl!(opts) do
+    opts
+    |> Keyword.get_values(:cache_ttl)
+    |> Enum.each(fn
+      ttl when is_valid_cache_ttl(ttl) ->
+        :ok
+
+      invalid ->
+        raise ArgumentError,
+              "EndPointBlank.configure/1 (EndPointBlank.Config.update/1) received an " <>
+                "invalid :cache_ttl: #{inspect(invalid)}. :cache_ttl must be a " <>
+                "non-negative integer number of seconds; 0 disables the authorization " <>
+                "cache. To use the default of #{@default_cache_ttl} seconds, omit " <>
+                ":cache_ttl rather than passing nil."
+    end)
   end
 
   @doc false

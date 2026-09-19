@@ -314,11 +314,131 @@ defmodule EndPointBlank.ConfigTest do
     end
 
     test "every currently valid key is still accepted" do
-      valid_keys = Map.keys(%Config{}) -- [:__struct__]
-
-      for key <- valid_keys do
-        assert Config.update([{key, nil}]) == :ok
+      # Each key is written with its own struct default, which is a valid value
+      # by definition. `nil` used to be written here for every key, but an
+      # explicit `cache_ttl: nil` is now itself rejected (sc-970, below), which
+      # would make this test about value validation rather than key validation.
+      for {key, default} <- Map.from_struct(%Config{}) do
+        assert Config.update([{key, default}]) == :ok
       end
+    end
+  end
+
+  # sc-970: one rule for `cache_ttl`, identical in the JS, Java, Elixir, Python
+  # and Rails SDKs. Omitting it means the default of 300 seconds; 0 disables
+  # the authorization cache; anything else that is not a non-negative integer
+  # -- an explicit nil, a negative number, a float, a string -- raises at
+  # configure time, not at first cache use.
+  #
+  # Before this, `update/1` validated keys but never values. `nil` and a string
+  # were stored as given and then silently turned into a 300 s TTL by a rescue
+  # in `EndPointBlank.AuthCache`, a float was used as a fractional TTL, and a
+  # negative number silently disabled the cache.
+  describe "cache_ttl (sc-970)" do
+    test "omitted, it is the default of 300 seconds" do
+      EndPointBlank.configure(app_name: "my-app")
+
+      assert Config.get().cache_ttl == 300
+    end
+
+    test "an explicit nil raises at configure time, naming cache_ttl and pointing at omission" do
+      error =
+        assert_raise ArgumentError, fn ->
+          EndPointBlank.configure(cache_ttl: nil)
+        end
+
+      assert error.message =~ ":cache_ttl"
+      assert error.message =~ "nil"
+      assert error.message =~ "omit"
+      assert error.message =~ "300"
+
+      # Rejected, not stored: nothing reaches the config for AuthCache to
+      # reinterpret later.
+      assert Config.get().cache_ttl == 300
+    end
+
+    test "0 is accepted and disables the authorization cache" do
+      assert EndPointBlank.configure(cache_ttl: 0) == :ok
+      assert Config.get().cache_ttl == 0
+
+      key = "epb_auth:sc-970:#{System.unique_integer([:positive])}"
+      assert EndPointBlank.AuthCache.put(key, {"app-env-1", nil}) == :ok
+      :sys.get_state(EndPointBlank.AuthCache)
+
+      assert EndPointBlank.AuthCache.get(key) == :miss
+      assert :ets.lookup(:epb_auth_cache, key) == []
+    end
+
+    test "a positive integer is accepted as a TTL in seconds" do
+      assert EndPointBlank.configure(cache_ttl: 1) == :ok
+      assert Config.get().cache_ttl == 1
+
+      assert EndPointBlank.configure(cache_ttl: 3_600) == :ok
+      assert Config.get().cache_ttl == 3_600
+    end
+
+    test "a negative integer raises at configure time instead of disabling the cache" do
+      for bad <- [-1, -5, -300] do
+        error =
+          assert_raise ArgumentError, fn ->
+            EndPointBlank.configure(cache_ttl: bad)
+          end
+
+        assert error.message =~ ":cache_ttl"
+        assert error.message =~ inspect(bad)
+        assert Config.get().cache_ttl == 300
+      end
+    end
+
+    test "a non-integer raises at configure time: strings, floats, and anything else" do
+      # 300.0 is included on purpose: an integral float is still not an
+      # integer, and used to be accepted as a float TTL. "300" is the shape an
+      # unconverted environment variable arrives in.
+      for bad <- ["abc", "300", 3.5, 300.0, -0.5, true, :infinity, [300]] do
+        error =
+          assert_raise ArgumentError, fn ->
+            EndPointBlank.configure(cache_ttl: bad)
+          end
+
+        assert error.message =~ ":cache_ttl"
+        assert error.message =~ inspect(bad)
+        assert Config.get().cache_ttl == 300
+      end
+    end
+
+    test "a rejected cache_ttl applies nothing else from the same call" do
+      Config.update(app_name: "before", cache_ttl: 60)
+
+      assert_raise ArgumentError, fn ->
+        Config.update(app_name: "after", cache_ttl: nil)
+      end
+
+      assert Config.get().app_name == "before"
+      assert Config.get().cache_ttl == 60
+    end
+
+    test "every occurrence of a repeated cache_ttl key is checked, not only the first" do
+      # update/1 applies opts in order, so the *last* occurrence is the one that
+      # would be stored. Checking only the first (`Keyword.get/2`) would let this
+      # through and store nil.
+      assert_raise ArgumentError, fn ->
+        Config.update(cache_ttl: 60, cache_ttl: nil)
+      end
+
+      assert Config.get().cache_ttl == 300
+    end
+
+    test "the config process survives a rejected cache_ttl" do
+      # Same reasoning as the unknown-key check above: the value check has to
+      # run in the caller, before Agent.update/2, or a bad value would crash
+      # the Agent that owns the config store.
+      config_pid = Process.whereis(Config)
+
+      assert_raise ArgumentError, fn -> Config.update(cache_ttl: -1) end
+
+      assert Process.alive?(config_pid)
+      assert Process.whereis(Config) == config_pid
+      assert %Config{cache_ttl: 300} = Config.get()
     end
   end
 

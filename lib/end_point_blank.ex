@@ -36,10 +36,10 @@ defmodule EndPointBlank do
 
   Raises `ArgumentError` if `opts` contains any key that is not one of the
   options below (see `EndPointBlank.Config.update/1`) — including a
-  misspelled or obsolete one. Nothing in `opts` is applied when that happens,
-  even the options that were fine: a bad `configure/1` call is a boot-time
-  bug, and this library does not silently run with a dropped setting instead
-  of surfacing it.
+  misspelled or obsolete one — or an invalid `:cache_ttl` (see below).
+  Nothing in `opts` is applied when that happens, even the options that were
+  fine: a bad `configure/1` call is a boot-time bug, and this library does not
+  silently run with a dropped setting instead of surfacing it.
 
   ## Options
 
@@ -56,7 +56,10 @@ defmodule EndPointBlank do
     * `:mask_hook` - Optional post-rule masking hook, `fn payload, record_type -> payload end`
     * `:masking_rules` - Ordered list of masking rule maps (see the README's "Data masking")
     * `:worker_count` - Max concurrent writes `EndPointBlank.Writers.DelayedWriter` performs per flush (default `4`)
-    * `:cache_ttl` - Authorization-cache TTL in seconds, `EndPointBlank.AuthCache` (default `300`)
+    * `:cache_ttl` - Authorization-cache TTL in seconds, `EndPointBlank.AuthCache`. Omit it for
+      the default of `300`; `0` disables the cache. Must be a non-negative integer: an explicit
+      `nil`, a negative number, a float or a string raises `ArgumentError` here, at configure
+      time, rather than being reinterpreted when the cache is first used
     * `:trust_proxy_headers` - Whether the per-request `scheme`/`host`/`port` report honors `x-forwarded-*` headers (default `true`)
 
   ## Example

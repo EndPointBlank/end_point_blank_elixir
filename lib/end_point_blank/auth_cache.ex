@@ -5,8 +5,10 @@ defmodule EndPointBlank.AuthCache do
   Concurrent reads go directly to ETS (no GenServer round-trip).
   Mutations are serialized through the GenServer to make eviction safe.
 
-  Setting `cache_ttl` to zero or less disables the cache: reads always
-  miss, writes are refused (including one already queued when the config
+  Setting `cache_ttl` to `0` disables the cache. No other value does: a
+  negative, `nil` or non-integer `cache_ttl` is refused by
+  `EndPointBlank.configure/1` (sc-970). While disabled, reads always miss,
+  writes are refused (including one already queued when the config
   changed — see `handle_cast/2`), and **both** `get/1` and `put/2` clear
   the *whole* table — every entry, not just the one being looked up or
   written — the moment either of them observes the disabled state. Clearing
@@ -27,7 +29,7 @@ defmodule EndPointBlank.AuthCache do
   var exists for it; see `Config`'s `resolve/1`) — sets it on the node it
   runs on and has no effect anywhere else. So "disabled" is a per-node
   fact — a node is disabled only if *that node's own* `cache_ttl` is
-  `<= 0` — and so is this module's table (ETS is not distributed; each
+  `0` — and so is this module's table (ETS is not distributed; each
   node's `AuthCache` holds only what was cached on it).
 
   A concrete case worth naming: an operator runs `configure(cache_ttl: 0)`
@@ -38,7 +40,7 @@ defmodule EndPointBlank.AuthCache do
   grant already cached on either of them keeps answering for up to its own
   TTL. There is no mechanism here, and none planned, by which B or C
   "find out" A was disabled. Flushing every node requires configuring
-  `cache_ttl <= 0` on **every node individually** and then getting an
+  `cache_ttl: 0` on **every node individually** and then getting an
   authorize call (or a direct `get/1`/`put/2`) to land on **each of
   them** while it is; nothing here makes that happen for you, and nothing
   here can turn a single disable into a cluster-wide guarantee.
@@ -46,7 +48,7 @@ defmodule EndPointBlank.AuthCache do
   **Residual, deliberately not fixed here (the same in all five SDKs of
   this contract):** even on one single node, the clear only runs when
   `get/1` or `put/2` is actually *called* while that node's own
-  `cache_ttl <= 0` — never at `configure/1` time itself, and never merely
+  `cache_ttl` is `0` — never at `configure/1` time itself, and never merely
   because traffic arrives. In this library the only caller of either
   function is `EndPointBlank.Commands.EndpointAuthorize` (reached through
   `EndPointBlank.Plug.Authorized`), so concretely it takes an **authorize
@@ -105,10 +107,11 @@ defmodule EndPointBlank.AuthCache do
 
   use GenServer
   require Logger
+  # For `Config.is_valid_cache_ttl/1`, a guard, used by `ttl_ms/0`.
+  require EndPointBlank.Config, as: Config
 
   @table :epb_auth_cache
   @max_size 1000
-  @default_ttl_ms 300_000
 
   # ── Public API ──────────────────────────────────────────────────────────────
 
@@ -124,7 +127,7 @@ defmodule EndPointBlank.AuthCache do
   for the two conditions that must both hold. `:miss` otherwise, which also
   deletes a found-but-stale entry (never a fresh one written concurrently
   under the same key — see the moduledoc). Always `:miss` while the cache
-  is disabled (`cache_ttl <= 0`) — and, on that path, also clears the whole
+  is disabled (`cache_ttl` is `0`) — and, on that path, also clears the whole
   table so a later re-enable cannot resurrect what looked disabled. See
   `clear/0`.
   """
@@ -191,7 +194,7 @@ defmodule EndPointBlank.AuthCache do
   operation with nothing to coordinate.
 
   Called automatically whenever a `get/1` or `put/2` call *observes*
-  `cache_ttl <= 0` on this node — not continuously while it is disabled,
+  `cache_ttl` set to `0` on this node — not continuously while it is disabled,
   and not on any other node (see the moduledoc). Also exposed publicly so
   a host application can force-flush the cache directly, on demand,
   matching the `clear()` the JS, Python, Ruby and Java SDKs already
@@ -269,16 +272,51 @@ defmodule EndPointBlank.AuthCache do
     end
   end
 
-  # Narrowly `ArithmeticError`, which is what a nonsensical `cache_ttl` (nil, a
-  # string, a float-shaped binary) raises on the multiplication. A bare `rescue
-  # _` used to stand here and was harmless only by accident: the one other way
-  # this line could fail was an `Agent.get/2` timeout, and a timeout is an exit,
-  # which `rescue` never sees. sc-350 made that read raise instead, so a bare
-  # rescue would now quietly swallow "the config store is down" and cache with a
-  # made-up TTL — precisely the silent fallback sc-350 exists to remove.
+  # `EndPointBlank.Config.update/1` refuses any `cache_ttl` that is not a
+  # non-negative integer (sc-970), so every value that came through
+  # `configure/1` takes the first clause.
+  #
+  # A `rescue ArithmeticError -> 300_000` used to stand here. It turned a `nil`
+  # or string `cache_ttl` into the 300 s default at first cache use, which is
+  # the exact behaviour sc-970 forbids: an explicit nil must never mean "the
+  # default". It is not kept as a safety net, because the only thing it could
+  # still catch is the config invariant having broken some other way, and then
+  # guessing a TTL is the wrong answer. So is plain multiplication with no
+  # check: it raises for nil or a string, but quietly uses a float as a
+  # fractional TTL and treats a negative number as "disabled".
+  #
+  # The one realistic way to get here is a hot code upgrade from 0.7.0 or
+  # earlier. Those releases accepted any value and stored it in the config
+  # Agent's state, and that state survives the upgrade.
+  #
+  # Where the raise lands depends on the caller:
+  #
+  #   * `get/2` and `put/3` run in the request process, so the authorize call
+  #     fails with this error. Nothing on the authorize path rescues it, so a
+  #     bad stored value can never let a request through.
+  #   * `handle_cast/2` runs in this GenServer. There, the raise crashes the
+  #     AuthCache process, and the application supervisor (`:one_for_one`)
+  #     restarts it. The ETS table dies with its owner, so the new process
+  #     starts with an empty cache. That is the intended outcome, not a new
+  #     bug: the crash is logged, and an empty cache only means more misses.
+  #     It is also close to unreachable. While the value is bad, `put/3`
+  #     raises in the caller before it can cast, so only a `{:put, ...}` cast
+  #     queued by pre-upgrade code can get here.
+  #
+  # Validity is `EndPointBlank.Config.is_valid_cache_ttl/1`, the same guard
+  # `configure/1` uses, so the two checks cannot drift apart.
   defp ttl_ms do
-    EndPointBlank.Config.get().cache_ttl * 1_000
-  rescue
-    ArithmeticError -> @default_ttl_ms
+    case Config.get().cache_ttl do
+      ttl when Config.is_valid_cache_ttl(ttl) ->
+        ttl * 1_000
+
+      invalid ->
+        raise "EndPointBlank.AuthCache found cache_ttl #{inspect(invalid)} in the config, " <>
+                "but it must be a non-negative integer number of seconds. " <>
+                "EndPointBlank.configure/1 refuses such a value, so it was stored some other " <>
+                "way, for example by a release older than 0.8.0 whose config survived a hot " <>
+                "code upgrade. Refusing to guess a TTL. Call EndPointBlank.configure/1 with " <>
+                "an integer :cache_ttl (the default is 300; 0 disables the cache) to replace it."
+    end
   end
 end

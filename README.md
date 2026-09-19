@@ -107,9 +107,30 @@ env var > built-in default**.
 | Post-rule masking hook, `fn payload, record_type -> payload end` | `:mask_hook` | — (`configure/1` only) | `nil` |
 | Write mode: `:direct` (synchronous HTTP per payload) or `:delayed` (batched background queue) | `:log_mode` | — (`configure/1` only) | `:direct` |
 | Max concurrent writes `EndPointBlank.Writers.DelayedWriter` performs per flush | `:worker_count` | — (`configure/1` only) | `4` |
-| Authorization-cache TTL in seconds (`EndPointBlank.AuthCache`) | `:cache_ttl` | — (`configure/1` only) | `300` |
+| Authorization-cache TTL in seconds (`EndPointBlank.AuthCache`); `0` disables the cache. See [`:cache_ttl` values](#cache_ttl-values) | `:cache_ttl` | — (`configure/1` only) | `300` |
 | Whether the per-request `scheme`/`host`/`port` report honors `x-forwarded-proto`/`-host`/`-port` (see [Reported base URL](#reported-base-url)) | `:trust_proxy_headers` | — (`configure/1` only) | `true` |
 | Ordered list of masking rule maps (see [Data masking](#data-masking)) | `:masking_rules` | — (`configure/1` only) | `[]` |
+
+### `:cache_ttl` values
+
+`:cache_ttl` follows one rule, the same in the Elixir, JS, Java, Python and
+Rails SDKs:
+
+| You pass | Result |
+|---|---|
+| nothing (omit `:cache_ttl`) | the default, 300 seconds |
+| a positive integer, e.g. `cache_ttl: 60` | cache authorizations for that many seconds |
+| `cache_ttl: 0` | caching disabled |
+| `cache_ttl: nil` | `ArgumentError` from `configure/1` |
+| a negative integer, e.g. `cache_ttl: -1` | `ArgumentError` from `configure/1` |
+| anything else that is not an integer: a float (`3.5`, `300.0`), a string (`"300"`) | `ArgumentError` from `configure/1` |
+
+The error is raised by the `configure/1` call itself, so a bad value fails at
+boot rather than when the first request is authorized, and nothing else in
+that `configure/1` call is applied. To get the default, leave `:cache_ttl` out;
+`nil` does not mean "use the default". A value read from an environment
+variable arrives as a string, so convert it first
+(`String.to_integer(System.fetch_env!("MY_CACHE_TTL"))`).
 
 ### Configure example (all settings)
 
@@ -226,7 +247,7 @@ Under the hood it:
   everything already cached (an entry never outlives whichever is smaller,
   the TTL it was written with or the TTL currently configured), and raising
   it never extends an entry past what it was written with. Setting
-  `:cache_ttl` to `0` (or lower) disables the cache outright: every lookup
+  `:cache_ttl` to `0` disables the cache outright: every lookup
   misses, and an authorize call made *while disabled* deletes every entry
   already stored, not merely the one it looked up — so raising `:cache_ttl`
   back up afterwards cannot resurrect anything that was cached before that
@@ -250,7 +271,7 @@ Under the hood it:
   module has, and a revoked grant already cached on either of them keeps
   answering for up to its own TTL — nothing here makes B or C "find out"
   that A was disabled, no matter how much traffic reaches them. Flushing
-  every node requires setting `:cache_ttl <= 0` on **each node
+  every node requires setting `:cache_ttl` to `0` on **each node
   individually** and getting an authorize call (or a direct
   `get/1`/`put/2`) to land on **each of them** while it is disabled. Call
   `EndPointBlank.AuthCache.clear/0` directly, on every node, when a flush
