@@ -5,7 +5,7 @@ defmodule EndPointBlank.AuthCache do
   Concurrent reads go directly to ETS (no GenServer round-trip).
   Mutations are serialized through the GenServer to make eviction safe.
 
-  Setting `cache_ttl` to `0` disables the cache. It is the only way to: a
+  Setting `cache_ttl` to `0` disables the cache. No other value does: a
   negative, `nil` or non-integer `cache_ttl` is refused by
   `EndPointBlank.configure/1` (sc-970). While disabled, reads always miss,
   writes are refused (including one already queued when the config

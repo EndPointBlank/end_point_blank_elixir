@@ -37,10 +37,9 @@ defmodule EndPointBlank do
   Raises `ArgumentError` if `opts` contains any key that is not one of the
   options below (see `EndPointBlank.Config.update/1`) — including a
   misspelled or obsolete one — or an invalid `:cache_ttl` (see below).
-  Nothing in `opts` is applied when that happens,
-  even the options that were fine: a bad `configure/1` call is a boot-time
-  bug, and this library does not silently run with a dropped setting instead
-  of surfacing it.
+  Nothing in `opts` is applied when that happens, even the options that were
+  fine: a bad `configure/1` call is a boot-time bug, and this library does not
+  silently run with a dropped setting instead of surfacing it.
 
   ## Options
 
