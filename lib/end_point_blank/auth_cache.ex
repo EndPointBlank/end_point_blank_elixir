@@ -107,6 +107,8 @@ defmodule EndPointBlank.AuthCache do
 
   use GenServer
   require Logger
+  # For `Config.is_valid_cache_ttl/1`, a guard, used by `ttl_ms/0`.
+  require EndPointBlank.Config, as: Config
 
   @table :epb_auth_cache
   @max_size 1000
@@ -286,9 +288,26 @@ defmodule EndPointBlank.AuthCache do
   # The one realistic way to get here is a hot code upgrade from 0.7.0 or
   # earlier. Those releases accepted any value and stored it in the config
   # Agent's state, and that state survives the upgrade.
+  #
+  # Where the raise lands depends on the caller:
+  #
+  #   * `get/2` and `put/3` run in the request process, so the authorize call
+  #     fails with this error. Nothing on the authorize path rescues it, so a
+  #     bad stored value can never let a request through.
+  #   * `handle_cast/2` runs in this GenServer. There, the raise crashes the
+  #     AuthCache process, and the application supervisor (`:one_for_one`)
+  #     restarts it. The ETS table dies with its owner, so the new process
+  #     starts with an empty cache. That is the intended outcome, not a new
+  #     bug: the crash is logged, and an empty cache only means more misses.
+  #     It is also close to unreachable. While the value is bad, `put/3`
+  #     raises in the caller before it can cast, so only a `{:put, ...}` cast
+  #     queued by pre-upgrade code can get here.
+  #
+  # Validity is `EndPointBlank.Config.is_valid_cache_ttl/1`, the same guard
+  # `configure/1` uses, so the two checks cannot drift apart.
   defp ttl_ms do
-    case EndPointBlank.Config.get().cache_ttl do
-      ttl when is_integer(ttl) and ttl >= 0 ->
+    case Config.get().cache_ttl do
+      ttl when Config.is_valid_cache_ttl(ttl) ->
         ttl * 1_000
 
       invalid ->

@@ -92,6 +92,18 @@ defmodule EndPointBlank.Config do
                 key when is_atom(key) -> key
               end)
 
+  # sc-970: the one definition of a valid `cache_ttl`, in seconds. `0` is
+  # valid and disables the authorization cache. Both places that check the
+  # rule use this guard: `validate_cache_ttl!/1` below, when `configure/1` is
+  # called, and `EndPointBlank.AuthCache`'s `ttl_ms/0`, when the stored value
+  # is read. That way the two cannot disagree about what is valid.
+  # `is_integer/1` is not redundant next to `>= 0`: in Erlang term order,
+  # `nil`, `true` and every other atom compare greater than any number.
+  #
+  # Public only so AuthCache can `require` it; not part of the library's API.
+  @doc false
+  defguard is_valid_cache_ttl(ttl) when is_integer(ttl) and ttl >= 0
+
   def start_link(_opts) do
     Agent.start_link(&init_store/0, name: __MODULE__)
   end
@@ -204,7 +216,7 @@ defmodule EndPointBlank.Config do
     opts
     |> Keyword.get_values(:cache_ttl)
     |> Enum.each(fn
-      ttl when is_integer(ttl) and ttl >= 0 ->
+      ttl when is_valid_cache_ttl(ttl) ->
         :ok
 
       invalid ->
