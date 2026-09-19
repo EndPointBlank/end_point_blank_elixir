@@ -23,7 +23,11 @@
   `EndPointBlank.AuthCache` no longer rescues the `ArithmeticError` that a
   `nil` or string `cache_ttl` used to raise, which is where the silent 300
   came from. `configure/1` can no longer store such a value, so that rescue
-  could only ever hide a broken invariant.
+  could only ever hide a broken invariant. If an invalid value is in the
+  config anyway (for example, config state from 0.7.0 surviving a hot code
+  upgrade), the cache now raises a `RuntimeError` that names the value, rather
+  than guessing a TTL; calling `configure/1` with a valid `:cache_ttl`
+  replaces it.
 
 ### Fixed
 

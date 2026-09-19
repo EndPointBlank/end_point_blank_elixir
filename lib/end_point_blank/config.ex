@@ -213,8 +213,7 @@ defmodule EndPointBlank.Config do
                 "invalid :cache_ttl: #{inspect(invalid)}. :cache_ttl must be a " <>
                 "non-negative integer number of seconds; 0 disables the authorization " <>
                 "cache. To use the default of #{@default_cache_ttl} seconds, omit " <>
-                ":cache_ttl rather " <>
-                "than passing nil."
+                ":cache_ttl rather than passing nil."
     end)
   end
 

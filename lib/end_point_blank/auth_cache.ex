@@ -270,20 +270,34 @@ defmodule EndPointBlank.AuthCache do
     end
   end
 
-  # No rescue, deliberately. `EndPointBlank.Config.update/1` refuses any
-  # `cache_ttl` that is not a non-negative integer (sc-970), so this
-  # multiplication cannot fail on a value that came through `configure/1`.
+  # `EndPointBlank.Config.update/1` refuses any `cache_ttl` that is not a
+  # non-negative integer (sc-970), so every value that came through
+  # `configure/1` takes the first clause.
   #
-  # A `rescue ArithmeticError -> 300_000` used to stand here and turned a `nil`
-  # or string `cache_ttl` into the 300 s default at first cache use. That is
-  # the exact behaviour sc-970 forbids — an explicit nil must never mean "the
-  # default" — so keeping it as a safety net would reintroduce the silent
-  # fallback in the one situation it could still fire: the config invariant
-  # having been broken some other way. If that ever happens, raising here is
-  # the correct report. (Before it was narrowed to `ArithmeticError`, a bare
-  # `rescue _` here would also have swallowed "the config store is down";
-  # sc-350.)
+  # A `rescue ArithmeticError -> 300_000` used to stand here. It turned a `nil`
+  # or string `cache_ttl` into the 300 s default at first cache use, which is
+  # the exact behaviour sc-970 forbids: an explicit nil must never mean "the
+  # default". It is not kept as a safety net, because the only thing it could
+  # still catch is the config invariant having broken some other way, and then
+  # guessing a TTL is the wrong answer. So is plain multiplication with no
+  # check: it raises for nil or a string, but quietly uses a float as a
+  # fractional TTL and treats a negative number as "disabled".
+  #
+  # The one realistic way to get here is a hot code upgrade from 0.7.0 or
+  # earlier. Those releases accepted any value and stored it in the config
+  # Agent's state, and that state survives the upgrade.
   defp ttl_ms do
-    EndPointBlank.Config.get().cache_ttl * 1_000
+    case EndPointBlank.Config.get().cache_ttl do
+      ttl when is_integer(ttl) and ttl >= 0 ->
+        ttl * 1_000
+
+      invalid ->
+        raise "EndPointBlank.AuthCache found cache_ttl #{inspect(invalid)} in the config, " <>
+                "but it must be a non-negative integer number of seconds. " <>
+                "EndPointBlank.configure/1 refuses such a value, so it was stored some other " <>
+                "way, for example by a release older than 0.8.0 whose config survived a hot " <>
+                "code upgrade. Refusing to guess a TTL. Call EndPointBlank.configure/1 with " <>
+                "an integer :cache_ttl (the default is 300; 0 disables the cache) to replace it."
+    end
   end
 end

@@ -311,29 +311,35 @@ defmodule EndPointBlank.AuthCacheTest do
   end
 
   describe "resilience" do
-    test "a cache_ttl that bypassed configure-time validation raises instead of " <>
-           "silently becoming 300",
+    test "a cache_ttl that got past configure-time validation raises instead of being " <>
+           "guessed at",
          %{key: key} do
       # sc-970: Config.update/1 now refuses any cache_ttl that is not a
-      # non-negative integer, so no public API can store nil here. This used
-      # to be the one place a nil (or a string) was quietly turned into the
-      # 300 s default, by a `rescue ArithmeticError`. An explicit nil must
-      # never mean "the default" -- that is the contract -- so if the
-      # invariant is ever broken, this cache must say so rather than guess.
+      # non-negative integer, so no public API can store one of these. This
+      # used to be where a nil or a string quietly became the 300 s default (a
+      # `rescue ArithmeticError`), where a float became a fractional TTL, and
+      # where a negative number meant "disabled". If the invariant is ever
+      # broken -- e.g. by config state from 0.7.0 surviving a hot code upgrade
+      # -- this cache must say so rather than guess.
       #
-      # The only way to get nil into the store now is to write it from inside
-      # the config Agent, which owns the (protected) ETS table the read path
-      # uses. Restored by the on_exit(&Config.reset/0) in setup.
-      Agent.update(Config, fn config ->
-        config = %{config | cache_ttl: nil}
-        true = :ets.insert(Config, {:config, config})
-        config
-      end)
+      # The only way to store one now is to write it from inside the config
+      # Agent, which owns the (protected) ETS table the read path uses.
+      # Restored by the on_exit(&Config.reset/0) in setup.
+      for bad <- [nil, "abc", 3.5, -5] do
+        Agent.update(Config, fn config ->
+          config = %{config | cache_ttl: bad}
+          true = :ets.insert(Config, {:config, config})
+          config
+        end)
 
-      assert Config.get().cache_ttl == nil
+        assert Config.get().cache_ttl == bad
 
-      assert_raise ArithmeticError, fn -> AuthCache.get(key) end
-      assert_raise ArithmeticError, fn -> AuthCache.put(key, {"app-env-1", nil}) end
+        error = assert_raise RuntimeError, fn -> AuthCache.get(key) end
+        assert error.message =~ "cache_ttl #{inspect(bad)}"
+        assert error.message =~ "Refusing to guess a TTL"
+
+        assert_raise RuntimeError, fn -> AuthCache.put(key, {"app-env-1", nil}) end
+      end
     end
 
     test "does not queue a write when the TTL is non-positive", %{key: key} do
