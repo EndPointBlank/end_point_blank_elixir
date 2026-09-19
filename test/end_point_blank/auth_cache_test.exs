@@ -311,17 +311,29 @@ defmodule EndPointBlank.AuthCacheTest do
   end
 
   describe "resilience" do
-    test "a nonsensical cache_ttl falls back to the default instead of killing the cache", %{
-      key: key
-    } do
-      # The cache sits in front of every authorization; a bad config value taking
-      # it down would take authorization down with it.
-      Config.update(cache_ttl: nil)
+    test "a cache_ttl that bypassed configure-time validation raises instead of " <>
+           "silently becoming 300",
+         %{key: key} do
+      # sc-970: Config.update/1 now refuses any cache_ttl that is not a
+      # non-negative integer, so no public API can store nil here. This used
+      # to be the one place a nil (or a string) was quietly turned into the
+      # 300 s default, by a `rescue ArithmeticError`. An explicit nil must
+      # never mean "the default" -- that is the contract -- so if the
+      # invariant is ever broken, this cache must say so rather than guess.
+      #
+      # The only way to get nil into the store now is to write it from inside
+      # the config Agent, which owns the (protected) ETS table the read path
+      # uses. Restored by the on_exit(&Config.reset/0) in setup.
+      Agent.update(Config, fn config ->
+        config = %{config | cache_ttl: nil}
+        true = :ets.insert(Config, {:config, config})
+        config
+      end)
 
-      put(key, {"app-env-1", nil})
+      assert Config.get().cache_ttl == nil
 
-      assert AuthCache.get(key) == {:hit, {"app-env-1", nil}}
-      assert Process.alive?(Process.whereis(AuthCache))
+      assert_raise ArithmeticError, fn -> AuthCache.get(key) end
+      assert_raise ArithmeticError, fn -> AuthCache.put(key, {"app-env-1", nil}) end
     end
 
     test "does not queue a write when the TTL is non-positive", %{key: key} do

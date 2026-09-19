@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Breaking
+
+- **`EndPointBlank.configure/1` now raises `ArgumentError` for a `:cache_ttl`
+  that is not a non-negative integer, instead of accepting it (sc-970).**
+  This is one rule, the same in the Elixir, JS, Java, Python and Rails SDKs:
+  omit `:cache_ttl` for the default of 300 seconds, pass `0` to disable the
+  authorization cache, or pass a positive integer number of seconds.
+  Anything else raises at the `configure/1` call, and nothing else in that
+  call is applied. What changes, by value:
+  - `nil`: was stored, then silently treated as 300 when the cache was first
+    used. Now raises. Omit the option to get the default.
+  - A negative integer: silently disabled the cache, the same as `0`. Now
+    raises. Use `0` to disable.
+  - A string (`"300"`, `"abc"`): silently treated as 300. Now raises.
+  - A float (`3.5`, `300.0`): used as a fractional TTL (`3.5` cached for
+    3.5 seconds). Now raises.
+  - Omitted, `0`, and positive integers behave as before.
+
+  `EndPointBlank.AuthCache` no longer rescues the `ArithmeticError` that a
+  `nil` or string `cache_ttl` used to raise, which is where the silent 300
+  came from. `configure/1` can no longer store such a value, so that rescue
+  could only ever hide a broken invariant.
+
 ### Fixed
 
 - **Runtime `cache_ttl` changes now apply to already-cached entries, not
@@ -28,7 +51,7 @@
   caller of `AuthCache.get/1` or `put/2` in this library is
   `EndPointBlank.Commands.EndpointAuthorize` (reached through
   `EndPointBlank.Plug.Authorized`), so concretely: an **authorize call**
-  made while `cache_ttl <= 0` deletes every row in the table
+  made while `cache_ttl` is `0` deletes every row in the table
   (`:ets.delete_all_objects/1`), not only the key that call happened to
   look up or write, so restoring `cache_ttl` afterwards cannot resurrect
   *any* decision cached before that call — including one for a caller that
@@ -55,7 +78,7 @@
   disabled, their tables are untouched, and a revoked grant already cached
   on either of them keeps answering for up to its own TTL — there is no
   mechanism by which they "find out" A was disabled. Flushing every node
-  requires setting `cache_ttl <= 0` on **each node individually** and
+  requires setting `cache_ttl` to `0` on **each node individually** and
   getting an authorize call (or a direct `get/1`/`put/2`) to land on
   **each of them** while it is disabled. Call `AuthCache.clear/0`
   directly, on every node, when a flush is the goal and that is not
