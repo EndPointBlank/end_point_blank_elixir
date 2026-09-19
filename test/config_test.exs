@@ -452,6 +452,40 @@ defmodule EndPointBlank.ConfigTest do
   # struct's atom keys, found nothing, and silently dropped it — the same
   # silent no-op this whole change exists to stop. `update/1` now rejects
   # both up front, in the caller, before the Agent is ever touched.
+  # sc-1266: the sc-970 reviews found Rails and Java apply part of a
+  # `configure` call's settings when a later field fails validation — the
+  # fields validated (or merged) before the bad one stay assigned, so a
+  # caller who gets an `ArgumentError` is left with a half-updated config.
+  # Every SDK was required to add this same test regardless of whether it
+  # was already atomic, and to say in its PR which case applies.
+  #
+  # This SDK's `update/1` (above) already validates every supplied value
+  # — `unknown_keys/1` and `validate_cache_ttl!/1` — entirely in the calling
+  # process before `Agent.update/2` is ever invoked; the reduce inside
+  # `Agent.update/2` is unconditional `Map.put/3` and cannot itself fail.
+  # There is no code path that applies some keys and then raises on a later
+  # one, so this test is expected to pass unmodified. That was confirmed by
+  # mutation, not by reading the source: temporarily moving
+  # `validate_cache_ttl!(opts)` to run *after* `Agent.update/2` (reinstating
+  # "apply everything, validate last") turns this red with a real assertion
+  # failure, which is the regression this test exists to catch.
+  describe "configure/1 is all-or-nothing (sc-1266)" do
+    test "a call with one valid field and one invalid field raises and applies neither" do
+      EndPointBlank.configure(client_id: "prior-client-id")
+
+      assert_raise ArgumentError, fn ->
+        EndPointBlank.configure(client_id: "new-client-id", cache_ttl: -1)
+      end
+
+      # Proof this is all-or-nothing, not best-effort: the valid field named
+      # in the same rejected call was NOT applied. If `configure/1` ever
+      # applied fields before validating the rest, this would read
+      # "new-client-id" instead.
+      assert Config.get().client_id == "prior-client-id"
+      assert Config.get().cache_ttl == 300
+    end
+  end
+
   describe "update/1 rejects non-keyword lists" do
     test "raises when given a plain atom instead of a {key, value} pair" do
       config_pid = Process.whereis(Config)
