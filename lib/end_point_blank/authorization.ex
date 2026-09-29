@@ -32,12 +32,20 @@ defmodule EndPointBlank.Authorization do
     * `:token_cache_unavailable` -- `EndPointBlank.AccessTokens` did not
       answer: it was not running, or a mint against a hung intake outlasted
       the call.
+    * `:invalid_token` -- the cache answered `{:ok, _}` with something that is
+      not a non-empty token string. `EndPointBlank.AccessTokens` guarantees it
+      does not, so this is a defensive refusal for a broken guarantee rather
+      than an outcome to plan for; treat it as transient.
     * Any `t:EndPointBlank.AccessTokens.failure/0` -- the mint itself failed.
       `:credential_rejected` (intake answered 401) and
       `{:request_rejected, status}` are permanent; `{:server_error, status}`
       and `{:transport_error, reason}` (including a timeout) are transient.
   """
-  @type reason :: :missing_base_url | :token_cache_unavailable | AccessTokens.failure()
+  @type reason ::
+          :missing_base_url
+          | :token_cache_unavailable
+          | :invalid_token
+          | AccessTokens.failure()
 
   @doc """
   Returns a `Bearer` `Authorization` header value for an outbound call to a
@@ -57,7 +65,9 @@ defmodule EndPointBlank.Authorization do
   def header(base_url) when is_binary(base_url) and base_url != "" do
     case AccessTokens.token_result(base_url) do
       {:ok, token} when is_binary(token) and token != "" -> {:ok, "Bearer #{token}"}
-      {:ok, _unusable} -> {:error, :token_cache_unavailable}
+      # Unreachable while AccessTokens keeps its guarantee; refuse rather
+      # than raise a CaseClauseError if it ever breaks.
+      {:ok, _unusable} -> {:error, :invalid_token}
       {:error, reason} -> {:error, reason}
     end
   end

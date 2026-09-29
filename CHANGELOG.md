@@ -14,14 +14,26 @@
     instead of a bare string. `reason` is an
     `EndPointBlank.AccessTokens.failure/0` (`:credential_rejected`,
     `{:request_rejected, status}`, `{:server_error, status}`,
-    `{:transport_error, reason}`), `:token_cache_unavailable`, or
-    `:missing_base_url`. On an error, do not make the call.
+    `{:transport_error, reason}`), `:token_cache_unavailable`,
+    `:invalid_token` (a defensive refusal should the token cache ever answer
+    without a usable token), or `:missing_base_url`. On an error, do not make the call.
   - New `header!/1` returns the `"Bearer <token>"` string or raises the new
     `EndPointBlank.TokenUnavailableError` (fields `:base_url`, `:reason`,
-    `:message`). The message says the token could not be minted, why, and
-    that credentials are never sent to providers.
+    `:status`, `:message`). The message says the token could not be minted,
+    why, and that credentials are never sent to providers.
     `TokenUnavailableError.message/2` builds the same text from a `header/1`
     error.
+  - `TokenUnavailableError`'s `:status` is the HTTP status intake answered
+    the token request with, derived from the reason: `401` for
+    `:credential_rejected`, `status` for `{:request_rejected, status}` and
+    `{:server_error, status}`, and `nil` otherwise (a transport error, the
+    cache not answering, a missing URL). `TokenUnavailableError.status/1`
+    derives it from a `header/1` error.
+  - The message never `inspect`s the reason: a transport error can carry
+    request data. A `Req.TransportError` or bare atom reason reads
+    "intake could not be reached (timeout)"; any other term reads
+    "intake could not be reached (unexpected error)". The raw term is kept
+    on `:reason`.
   - `header/0` is gone; it always answered Basic, for writers and host
     code alike. `header(nil)` and `header("")`, which also answered Basic,
     now answer `{:error, :missing_base_url}`.

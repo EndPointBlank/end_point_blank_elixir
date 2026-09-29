@@ -324,7 +324,11 @@ handed the credential to the provider. A missing or empty URL is
 `reason` is one of the failures below, plus `:missing_base_url` and
 `:token_cache_unavailable` (the token cache did not answer in time).
 `EndPointBlank.TokenUnavailableError` carries it as `:reason` alongside
-`:base_url`.
+`:base_url` and `:status`, the HTTP status intake answered with (`401` for
+`:credential_rejected`, the status in `{:request_rejected, status}` or
+`{:server_error, status}`, otherwise `nil`). The message never `inspect`s a
+transport error, which can carry request data: it names only a known atom
+reason such as `timeout`, and the raw term stays on `:reason`.
 
 `EndPointBlank.AccessTokens` caches one token per application environment,
 keyed on the canonical base URL intake resolves the request to — not on the
