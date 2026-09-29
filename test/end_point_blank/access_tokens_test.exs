@@ -1010,4 +1010,37 @@ defmodule EndPointBlank.AccessTokensTest do
       assert Process.alive?(pid)
     end
   end
+
+  describe "token_result/1" do
+    test "answers {:ok, token} and caches it like token/1", %{base_url: base} do
+      stub_minting()
+
+      assert AccessTokens.token_result(base) == {:ok, "token-1"}
+      assert AccessTokens.token(base) == "token-1"
+      assert_received {:minted, _}
+      refute_received {:minted, _}
+    end
+
+    test "answers the reason for this very mint", %{base_url: base} do
+      # Authorization.header/1 refuses an outbound call with this reason, so it
+      # has to be the one for the mint just made -- not whatever last_failure/1
+      # holds by the time a caller asks, which a concurrent mint can change.
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "nope"})
+      end)
+
+      capture_log(fn ->
+        assert AccessTokens.token_result(base) == {:error, :credential_rejected}
+      end)
+    end
+
+    test "answers a transport error, not a token, when intake times out", %{base_url: base} do
+      Req.Test.stub(__MODULE__.Stub, fn conn -> Req.Test.transport_error(conn, :timeout) end)
+
+      capture_log(fn ->
+        assert {:error, {:transport_error, %Req.TransportError{reason: :timeout}}} =
+                 AccessTokens.token_result(base)
+      end)
+    end
+  end
 end

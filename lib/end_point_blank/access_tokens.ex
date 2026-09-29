@@ -25,8 +25,10 @@ defmodule EndPointBlank.AccessTokens do
 
   ## Why a mint failed
 
-  `token/1` answers `nil` for every failure, because its callers fall back to
-  Basic and have nothing else to do with the detail. But the detail matters:
+  `token/1` answers `nil` for every failure; `token_result/1` answers
+  `{:error, reason}` with the reason for that very mint, and is what
+  `EndPointBlank.Authorization.header/1` uses to refuse an outbound call with a
+  message that says why. The detail matters:
   intake answers 401 for a credential it has rejected, and that is permanent
   until a human re-issues the credential, where a 5xx or a refused connection
   will likely be gone on the next call. `last_failure/1` reports the last one
@@ -86,13 +88,34 @@ defmodule EndPointBlank.AccessTokens do
 
   Returns `nil` rather than raising if a token cannot be produced -- which
   includes a response that carried a token but no `base_url` (nothing to
-  cache it under) as well as the cache failing to answer in time -- so an
-  intake outage costs the caller a fall back to Basic rather than its request.
+  cache it under) as well as the cache failing to answer in time. A `nil`
+  means the call must not be made: there is no fallback credential for a
+  provider (sc-1469).
 
-  Use `last_failure/1` to find out which kind of failure a `nil` was.
+  Use `token_result/1` to get the reason for this mint along with it, or
+  `last_failure/1` to find out afterwards which kind of failure a `nil` was.
   """
+  @spec token(term()) :: String.t() | nil
   def token(base_url) do
-    call({:token, base_url}, nil)
+    case token_result(base_url) do
+      {:ok, token} -> token
+      {:error, _reason} -> nil
+    end
+  end
+
+  @doc """
+  Like `token/1`, but says why no token could be produced.
+
+  Returns `{:ok, token}` or `{:error, reason}`, where `reason` is a
+  `t:failure/0` from this very mint -- not whatever `last_failure/1` holds by
+  the time the caller asks, which a concurrent caller's mint may already have
+  replaced or cleared -- or `:token_cache_unavailable` when this cache did not
+  answer at all (it was not running, or a mint against a hung intake outlasted
+  the #{@call_timeout_ms} ms the call allows). Never raises.
+  """
+  @spec token_result(term()) :: {:ok, String.t()} | {:error, failure() | :token_cache_unavailable}
+  def token_result(base_url) do
+    call({:token, base_url}, {:error, :token_cache_unavailable})
   end
 
   @doc "Returns true if a token covering `base_url` is held and not about to expire."
@@ -170,8 +193,8 @@ defmodule EndPointBlank.AccessTokens do
 
   @impl true
   def handle_call({:token, base_url}, _from, state) do
-    {token, new_state} = fetch_or_generate(base_url, state)
-    {:reply, token, new_state}
+    {result, new_state} = fetch_or_generate(base_url, state)
+    {:reply, result, new_state}
   end
 
   @impl true
@@ -217,7 +240,7 @@ defmodule EndPointBlank.AccessTokens do
     case match(base_url, state.tokens) do
       %{token: token, expires_at: expires_at} ->
         if not_near_expiry?(expires_at),
-          do: {token, state},
+          do: {{:ok, token}, state},
           else: generate_and_store(base_url, state)
 
       nil ->
@@ -257,7 +280,7 @@ defmodule EndPointBlank.AccessTokens do
         _ -> state.tokens
       end
 
-    {token,
+    {{:ok, token},
      %{
        state
        | tokens: Map.put(tokens, key, entry),
@@ -278,18 +301,19 @@ defmodule EndPointBlank.AccessTokens do
 
     log_failure(base_url, reason)
 
-    {nil, record_failure(%{state | tokens: tokens}, base_url, reason)}
+    {{:error, reason}, record_failure(%{state | tokens: tokens}, base_url, reason)}
   end
 
   # A 401 is not an outage. Logging it as one -- "Failed to generate access
   # token", which reads as intake being down -- is why nobody notices that a
-  # credential has been revoked until traffic has been falling back to Basic
-  # for a week. This line names the remedy instead.
+  # credential has been revoked until outbound calls have been failing for a
+  # week. This line names the remedy instead.
   defp log_failure(base_url, :credential_rejected) do
     Logger.error(
       "[EndPointBlank] Access token credential was rejected for #{inspect(base_url)}: intake " <>
         "answered 401. This will NOT recover on its own — the API credential must be re-issued " <>
-        "(check :client_id/:client_secret). Callers fall back to Basic until it is."
+        "(check :client_id/:client_secret). Outbound calls to providers are refused " <>
+        "until it is."
     )
   end
 
@@ -364,8 +388,8 @@ defmodule EndPointBlank.AccessTokens do
   # An unreadable or absent expiry keeps the token for a default hour, which is
   # what the other four SDKs do. A guess, but a working one: treating the token
   # as unusable instead means a mint on every inbound request for as long as the
-  # intake misbehaves, and with nothing held every one of those requests falls
-  # back to Basic. There is no retry catching a token that dies sooner than the
+  # intake misbehaves, and with nothing held every one of those calls would be
+  # refused. There is no retry catching a token that dies sooner than the
   # guess -- invalidate/1 has no caller on this path -- so a bad guess means
   # 401s until the cache's own expiry-based refresh catches up.
   defp parse_expiry(value) when is_binary(value) do

@@ -287,32 +287,59 @@ endpoint, since the authorization flow already reports the denial itself.
 
 ### Calling another EndPointBlank-protected service
 
-`EndPointBlank.Authorization.header/1` is also a public building block for
-your own outbound calls to *other* services protected by EndPointBlank — not
-just the intake calls above. Pass the URL you are about to call, **not a
-hostname**, with any query string or fragment stripped first — intake
-normalizes the base URL and matches it against registered base URLs by
-longest path prefix, so you do not need to know how the target registered
-itself:
+`EndPointBlank.Authorization.header/1` is the public building block for your
+own outbound calls to *other* services protected by EndPointBlank (providers).
+Pass the URL you are about to call, **not a hostname**, with any query string
+or fragment stripped first — intake normalizes the base URL and matches it
+against registered base URLs by longest path prefix, so you do not need to
+know how the target registered itself:
 
 ```elixir
-EndPointBlank.Authorization.header("https://api.example.com/orders")
-# "Bearer <token>" (minting one via EndPointBlank.AccessTokens if none is
-# held yet) or "Basic <client_id:client_secret>" if no token could be
-# obtained.
+url = "https://api.example.com/orders"
+
+case EndPointBlank.Authorization.header(url) do
+  {:ok, auth} ->
+    # "Bearer <token>", minting one via EndPointBlank.AccessTokens if none is
+    # held yet.
+    Req.post(url, json: order, headers: [{"authorization", auth}])
+
+  {:error, reason} ->
+    # No token could be obtained. Do NOT make the call, and do not send
+    # Basic credentials yourself.
+    {:error, EndPointBlank.TokenUnavailableError.message(url, reason)}
+end
+
+# Or, raising EndPointBlank.TokenUnavailableError instead:
+auth = EndPointBlank.Authorization.header!(url)
 ```
+
+**Your `client_id`/`client_secret` is never sent to a provider.** When a token
+cannot be minted — intake is down or times out, answers 5xx, or rejects the
+credential with 401 — `header/1` answers `{:error, reason}` and `header!/1`
+raises `EndPointBlank.TokenUnavailableError`, whose message says what failed
+and why. Neither falls back to HTTP Basic. Until sc-1469 `header/1` did, which
+handed the credential to the provider. A missing or empty URL is
+`{:error, :missing_base_url}`; there is no no-argument `header/0`.
+
+`reason` is one of the failures below, plus `:missing_base_url` and
+`:token_cache_unavailable` (the token cache did not answer in time).
+`EndPointBlank.TokenUnavailableError` carries it as `:reason` alongside
+`:base_url`.
 
 `EndPointBlank.AccessTokens` caches one token per application environment,
 keyed on the canonical base URL intake resolves the request to — not on the
 URL you passed — so a service that calls several targets holds a token for
-each. Called with no argument (or `nil`), `header/1` always returns the Basic
-form; that is what every call this SDK makes to intake itself uses.
+each. Every call this SDK makes to its *own* intake (authorize, token minting,
+endpoint updates and the writers) uses
+`EndPointBlank.Authorization.basic_header/0` instead; intake already holds the
+credential. Never use `basic_header/0` for a call to a provider.
 
 #### Finding out why a token could not be minted
 
-`AccessTokens.token/1` answers `nil` for every failure, and `header/1` falls
-back to Basic — deliberately, so an intake outage costs a fallback rather than
-the request. But not every failure is an outage: intake answers **401** when
+`header/1` answers the reason for the mint it just attempted, and
+`AccessTokens.token_result/1` does the same for the bare token
+(`AccessTokens.token/1` answers `nil` for every failure). Not every failure is
+an outage: intake answers **401** when
 the API credential itself has been rejected, and that is permanent until
 someone re-issues it. `AccessTokens.last_failure/1` reports the last failure
 for a URL so a caller can tell them apart and alarm on the one that will not
@@ -562,7 +589,8 @@ Layout:
 ```
 lib/end_point_blank.ex                    # configure/1, version/0
 lib/end_point_blank/config.ex             # settings + ENDPOINTBLANK_* env fallback
-lib/end_point_blank/authorization.ex      # Authorization header builder
+lib/end_point_blank/authorization.ex      # Authorization header builder (Bearer-only for providers)
+lib/end_point_blank/token_unavailable_error.ex # raised by Authorization.header!/1
 lib/end_point_blank/auth_cache.ex         # ETS-backed authorization result cache
 lib/end_point_blank/access_tokens.ex      # per-application-environment access-token cache, keyed on base URL
 lib/end_point_blank/request_store.ex      # per-process request-scoped state

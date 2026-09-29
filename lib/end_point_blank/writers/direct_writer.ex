@@ -13,7 +13,8 @@ defmodule EndPointBlank.Writers.DirectWriter do
 
   def write(url_key, payloads) when is_list(payloads) do
     url = apply(EndPointBlank.Config, @url_builders[url_key] || :errors_url, [])
-    auth = Authorization.header()
+    # Own intake, so Basic -- see EndPointBlank.Authorization.basic_header/0.
+    auth = Authorization.basic_header()
     body = %{payload: payloads}
 
     case Http.post(url, body, auth) do
