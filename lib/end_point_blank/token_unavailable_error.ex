@@ -11,12 +11,19 @@ defmodule EndPointBlank.TokenUnavailableError do
 
   Fields:
 
-    * `:base_url` -- the URL a token was requested for.
+    * `:base_url` -- the URL a token was requested for, stripped to scheme,
+      host, port and path by `EndPointBlank.OutboundUrl.strip/1`, or `nil`
+      when there was no URL or it could not be parsed. Userinfo, query and
+      fragment can carry a secret, and error reporters capture an exception's
+      fields as well as its message, so they are not kept anywhere on the
+      exception; the caller already has the URL it passed.
     * `:reason` -- a `t:EndPointBlank.Authorization.reason/0`, kept exactly as
       it was returned. Branch on it to decide whether to retry:
       `{:transport_error, _}`, `{:server_error, _}`, `:invalid_token` and
       `:token_cache_unavailable` may clear on their own;
-      `:credential_rejected` and `{:request_rejected, _}` will not.
+      `:credential_rejected`, `{:request_rejected, _}`, `:missing_base_url`
+      and `:invalid_base_url` will not. A mint that raised or threw is a
+      `{:transport_error, _}` carrying what was raised.
     * `:status` -- the HTTP status intake answered the token request with,
       when there was one: `401` for `:credential_rejected`, the status carried
       by `{:request_rejected, status}` or `{:server_error, status}`, and `nil`
@@ -24,16 +31,22 @@ defmodule EndPointBlank.TokenUnavailableError do
     * `:message` -- says what failed, why, and that credentials are never
       sent to providers.
 
-  The message never `inspect`s the reason. A transport error can carry
-  request data, and this message is the kind of thing that ends up in a log
-  line, so only known shapes are described (a `Req.TransportError` or a bare
-  atom reason such as `:timeout`); anything else reads "unexpected error".
-  The full term is still on `:reason` for a caller that needs it.
+  The message is built from fixed phrases only, the same ones every
+  EndPointBlank SDK uses. It never `inspect`s the reason and never repeats
+  intake's response body, an exception's message or its module name: a
+  transport error can carry request data, and this message is the kind of
+  thing that ends up in a log line. The full term is still on `:reason` for a
+  caller that needs it.
   """
+
+  alias EndPointBlank.OutboundUrl
 
   @credentials_never_sent "EndPointBlank never sends this service's client_id/client_secret " <>
                             "to a provider, so there is no Basic-auth fallback and the call " <>
                             "must not be made without a token."
+
+  @transport_error "intake could not be reached (timeout, connection refused or " <>
+                     "retries exhausted); this may be transient"
 
   defexception [:base_url, :reason, :status, :message]
 
@@ -42,8 +55,14 @@ defmodule EndPointBlank.TokenUnavailableError do
     base_url = Keyword.get(opts, :base_url)
     reason = Keyword.get(opts, :reason)
 
+    stripped =
+      case OutboundUrl.strip(base_url) do
+        {:ok, url} -> url
+        {:error, _} -> nil
+      end
+
     %__MODULE__{
-      base_url: base_url,
+      base_url: stripped,
       reason: reason,
       status: status(reason),
       message: Keyword.get_lazy(opts, :message, fn -> message(base_url, reason) end)
@@ -71,36 +90,24 @@ defmodule EndPointBlank.TokenUnavailableError do
   def status({:server_error, status}) when is_integer(status), do: status
   def status(_reason), do: nil
 
-  # The URL is written as-is, never `inspect`ed. Anything that is not a
-  # non-empty string (the `:missing_base_url` case) could be any term at all,
-  # so it is not written out either.
-  # Scheme, host and path only. The caller controls `base_url`, and its
-  # userinfo, query or fragment can carry a secret; the message is what reaches
-  # logs and error reporting, so they are dropped here. The raw value stays on
-  # `:base_url`.
+  # Never `inspect`ed. Anything that is not a non-empty string (the
+  # `:missing_base_url` case) could be any term at all, so it is not written
+  # out; a string is written only as `OutboundUrl.strip/1` leaves it.
   defp url_text(base_url) when is_binary(base_url) and base_url != "" do
-    case URI.new(base_url) do
-      {:ok, %URI{scheme: scheme, host: host} = uri}
-      when is_binary(scheme) and is_binary(host) and host != "" ->
-        "#{scheme}://#{bracket(host)}#{port_text(uri)}#{uri.path}"
-
-      _ ->
-        "the requested URL (not shown: it could not be parsed)"
+    case OutboundUrl.strip(base_url) do
+      {:ok, stripped} -> stripped
+      {:error, _} -> "the requested URL (not shown: it could not be parsed)"
     end
   end
 
   defp url_text(_base_url), do: "(no URL)"
 
-  defp bracket(host) do
-    if String.contains?(host, ":"), do: "[#{host}]", else: host
-  end
-
-  defp port_text(%URI{scheme: scheme, port: port}) do
-    if port == nil or port == URI.default_port(scheme), do: "", else: ":#{port}"
-  end
-
   defp describe(:missing_base_url) do
     "no URL was given to mint a token for (pass the URL you are about to call)"
+  end
+
+  defp describe(:invalid_base_url) do
+    "the URL could not be parsed into a scheme and host, so no token was requested"
   end
 
   defp describe(:token_cache_unavailable) do
@@ -112,34 +119,35 @@ defmodule EndPointBlank.TokenUnavailableError do
   end
 
   defp describe(:credential_rejected) do
-    "EndPointBlank rejected this service's credential (HTTP 401); the " <>
-      "client_id/client_secret is invalid or revoked and must be re-issued"
+    "intake rejected this application's client credential (HTTP 401); " <>
+      "retrying cannot help -- re-issue the credential"
   end
 
   defp describe({:request_rejected, status}) when is_integer(status) do
-    "EndPointBlank refused the token request (HTTP #{status})"
+    "intake refused the token request (HTTP #{status}); check the URL and " <>
+      "that a grant covers the target"
   end
 
   defp describe({:server_error, status}) when is_integer(status) do
-    "EndPointBlank failed to issue a token (HTTP #{status})"
+    "intake failed to issue a token (HTTP #{status}); this may be transient"
   end
 
-  defp describe({:transport_error, %Req.TransportError{reason: reason}}) when is_atom(reason) do
-    "intake could not be reached (#{Atom.to_string(reason)})"
+  # An atom (`:timeout`) or an HTTP-stack exception is intake being out of
+  # reach. Anything else here was raised or thrown by the mint itself
+  # (`AccessTokens`' rescue), which says nothing about intake.
+  defp describe({:transport_error, reason}) do
+    if transport_failure?(reason),
+      do: @transport_error,
+      else: "the token request failed unexpectedly"
   end
 
-  defp describe({:transport_error, reason}) when is_atom(reason) do
-    "intake could not be reached (#{Atom.to_string(reason)})"
+  defp describe(_other), do: "the token request failed for an unknown reason"
+
+  defp transport_failure?(reason) when is_atom(reason), do: true
+
+  defp transport_failure?(%{__exception__: true, __struct__: module}) do
+    String.starts_with?(Atom.to_string(module), ["Elixir.Req.", "Elixir.Mint.", "Elixir.Finch."])
   end
 
-  # Deliberately not `inspect`ed: an arbitrary transport error term can carry
-  # request data, and secrets must never reach a log line.
-  defp describe({:transport_error, _reason}) do
-    "intake could not be reached (unexpected error)"
-  end
-
-  defp describe(nil), do: "no reason was recorded"
-
-  # Not `inspect`ed either, for the same reason.
-  defp describe(_other), do: "unexpected failure"
+  defp transport_failure?(_reason), do: false
 end

@@ -148,6 +148,37 @@ defmodule EndPointBlank.AuthorizationTest do
       assert_only_intake_was_called()
     end
 
+    test "strips userinfo, query and fragment before asking intake for a token",
+         %{base_url: base_url} do
+      # intake refuses a base_url carrying any of them (422), and any of them
+      # can carry a secret, so they are never sent.
+      test_pid = self()
+
+      stub_intake_and_provider(fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+        send(test_pid, {:mint_body, body})
+        mint_echoing(conn, "minted-token", body["base_url"])
+      end)
+
+      raw = String.replace(base_url, "https://", "https://user:hunter2@") <> "/orders?k=s3cret#f"
+
+      assert Authorization.header(raw) == {:ok, "Bearer minted-token"}
+      assert_received {:mint_body, %{"base_url" => sent}}
+      assert sent == base_url <> "/orders"
+    end
+
+    test "refuses an unparseable URL without asking intake for anything" do
+      stub_intake_and_provider(fn conn -> mint(conn, "should-not-be-minted") end)
+
+      for bad <- ["not a url ?token=s3cret", "/orders/1", "https://", "mailto:a@b.test"] do
+        assert Authorization.header(bad) == {:error, :invalid_base_url}
+      end
+
+      refute_received {:intake, _path, _auth}
+      refute_received {:provider, _auth}
+    end
+
     test "refuses a missing or empty URL without asking intake for anything" do
       stub_intake_and_provider(fn conn -> mint(conn, "should-not-be-minted") end)
 
@@ -206,7 +237,7 @@ defmodule EndPointBlank.AuthorizationTest do
       assert error.message =~ "access token for (no URL): "
     end
 
-    test "keeps the raw transport error on :reason but describes only its atom",
+    test "keeps the raw transport error on :reason but describes it in fixed words",
          %{base_url: base_url} do
       stub_intake_and_provider(fn conn -> Req.Test.transport_error(conn, :timeout) end)
 
@@ -217,7 +248,7 @@ defmodule EndPointBlank.AuthorizationTest do
 
       assert {:transport_error, %Req.TransportError{reason: :timeout}} = error.reason
       assert error.status == nil
-      assert error.message =~ "intake could not be reached (timeout)"
+      assert error.message =~ "intake could not be reached (timeout, connection refused"
       refute error.message =~ "Req.TransportError"
 
       assert_only_intake_was_called()
@@ -232,9 +263,36 @@ defmodule EndPointBlank.AuthorizationTest do
         end)
 
       assert {:transport_error, _raised} = error.reason
-      assert error.message =~ "intake could not be reached (unexpected error)"
+      assert error.message =~ "the token request failed unexpectedly"
       refute error.message =~ "exploded"
       refute error.message =~ "csecret"
+      refute error.message =~ "RuntimeError"
+    end
+
+    test "keeps only the stripped URL on the exception", %{base_url: base_url} do
+      stub_intake_and_provider(fn conn -> respond(conn, 401) end)
+      raw = String.replace(base_url, "https://", "https://user:hunter2@") <> "/orders?k=s3cret#f"
+
+      {error, _log} =
+        with_log(fn ->
+          assert_raise TokenUnavailableError, fn -> Authorization.header!(raw) end
+        end)
+
+      assert error.base_url == base_url <> "/orders"
+      assert error.message =~ "access token for #{base_url}/orders: "
+
+      for secret <- ~w(hunter2 s3cret) do
+        refute error.message =~ secret
+      end
+    end
+
+    test "raises TokenUnavailableError for an unparseable URL, keeping no URL" do
+      bad = "not a url ?token=s3cret"
+      error = assert_raise TokenUnavailableError, fn -> Authorization.header!(bad) end
+
+      assert error.reason == :invalid_base_url
+      assert error.base_url == nil
+      refute error.message =~ "s3cret"
     end
   end
 
@@ -242,6 +300,7 @@ defmodule EndPointBlank.AuthorizationTest do
     test "explains every reason and always states the no-credentials rule" do
       for reason <- [
             :missing_base_url,
+            :invalid_base_url,
             :token_cache_unavailable,
             :invalid_token,
             :credential_rejected,
@@ -257,9 +316,9 @@ defmodule EndPointBlank.AuthorizationTest do
       end
 
       assert TokenUnavailableError.message("u", {:transport_error, :timeout}) =~
-               "intake could not be reached (timeout)"
+               "intake could not be reached (timeout, connection refused or retries exhausted)"
 
-      assert TokenUnavailableError.message("u", :credential_rejected) =~ "re-issued"
+      assert TokenUnavailableError.message("u", :credential_rejected) =~ "re-issue the credential"
     end
 
     test "writes the URL plainly, in the documented wording" do
@@ -269,7 +328,8 @@ defmodule EndPointBlank.AuthorizationTest do
              ) ==
                "Could not mint an EndPointBlank access token for " <>
                  "https://api.example.test/orders: intake could not be reached " <>
-                 "(econnrefused). EndPointBlank never sends this service's " <>
+                 "(timeout, connection refused or retries exhausted); this may be " <>
+                 "transient. EndPointBlank never sends this service's " <>
                  "client_id/client_secret to a provider, so there is no " <>
                  "Basic-auth fallback and the call must not be made without a token."
     end
@@ -280,7 +340,7 @@ defmodule EndPointBlank.AuthorizationTest do
       error = TokenUnavailableError.exception(base_url: "https://api.test", reason: reason)
 
       assert error.reason == reason
-      assert error.message =~ "intake could not be reached (unexpected error)"
+      assert error.message =~ "the token request failed unexpectedly"
       refute error.message =~ "c2VjcmV0"
       refute error.message =~ "authorization"
       refute error.message =~ "%{"
@@ -337,7 +397,10 @@ defmodule EndPointBlank.AuthorizationTest do
 
   defp mint(conn, token) do
     {:ok, raw, conn} = Plug.Conn.read_body(conn)
-    base_url = Jason.decode!(raw)["base_url"]
+    mint_echoing(conn, token, Jason.decode!(raw)["base_url"])
+  end
+
+  defp mint_echoing(conn, token, base_url) do
     expires_at = DateTime.utc_now() |> DateTime.add(3600, :second) |> DateTime.to_iso8601()
 
     conn

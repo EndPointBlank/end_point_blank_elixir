@@ -11,7 +11,7 @@ defmodule EndPointBlank.Commands.GenerateAccessToken do
   """
 
   require Logger
-  alias EndPointBlank.{Config, Authorization, Http}
+  alias EndPointBlank.{Config, Authorization, Http, OutboundUrl}
 
   @typedoc """
   Why a mint failed.
@@ -49,18 +49,31 @@ defmodule EndPointBlank.Commands.GenerateAccessToken do
   @doc """
   Requests a new access token for `base_url`, reporting why a failure failed.
 
-  `base_url` is sent verbatim, unconditionally alongside `token_ttl` (which
-  goes over the wire as an explicit `null` when unconfigured — intake handles
-  that deliberately). intake normalizes `base_url` and matches it against
-  registered base URLs by longest path prefix.
+  `base_url` has its userinfo, query and fragment removed
+  (`EndPointBlank.OutboundUrl.strip/1`) and the rest is sent as written,
+  unconditionally alongside `token_ttl` (which goes over the wire as an
+  explicit `null` when unconfigured — intake handles that deliberately).
+  intake normalizes `base_url` and matches it against registered base URLs by
+  longest path prefix. `EndPointBlank.AccessTokens` strips before it gets
+  here; this strips again so a direct caller cannot send intake a secret
+  either.
 
   Returns `{:ok, payload}` -- a map carrying a non-empty `token` and
   `base_url`, plus whatever else intake sent (`expired_at`) -- or
   `{:error, reason}` where `reason` is a `t:failure/0`. See that type for
-  which reasons are permanent and which are worth retrying.
+  which reasons are permanent and which are worth retrying. A `base_url` that
+  does not parse, or is not a string, answers `{:error, :invalid_base_url}`
+  without a request.
   """
-  @spec generate_result(term()) :: {:ok, map()} | {:error, failure()}
+  @spec generate_result(term()) :: {:ok, map()} | {:error, failure() | :invalid_base_url}
   def generate_result(base_url) do
+    case OutboundUrl.strip(base_url) do
+      {:ok, stripped} -> request(stripped)
+      {:error, :invalid_base_url} -> {:error, :invalid_base_url}
+    end
+  end
+
+  defp request(base_url) do
     config = Config.get()
     body = %{base_url: base_url, token_ttl: config.token_ttl}
     auth = Authorization.basic_header()

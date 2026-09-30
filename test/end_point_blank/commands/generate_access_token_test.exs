@@ -77,6 +77,34 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
     assert body["base_url"] == messy
   end
 
+  test "never sends intake the URL's userinfo, query or fragment" do
+    # intake refuses a base_url carrying any of them (422), and any of them
+    # can carry a secret (sc-1469). An empty `?` or `#` goes too.
+    stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
+
+    for raw <- [
+          "https://user:hunter2@api.example.com:8443/orders?key=s3cret#frag",
+          "https://api.example.com:8443/orders?",
+          "https://api.example.com:8443/orders#"
+        ] do
+      capture_log(fn -> GenerateAccessToken.generate(raw) end)
+
+      assert_receive {:token_request, _path, body, _auth}
+      assert body["base_url"] == "https://api.example.com:8443/orders"
+    end
+  end
+
+  test "refuses an unparseable base_url without a request" do
+    stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
+
+    for bad <- ["not a url ?token=s3cret", "/orders", nil] do
+      assert GenerateAccessToken.generate_result(bad) == {:error, :invalid_base_url}
+      assert GenerateAccessToken.generate(bad) == nil
+    end
+
+    refute_received {:token_request, _path, _body, _auth}
+  end
+
   test "authenticates with Basic credentials" do
     # A token request cannot present a token, so this must never try to.
     stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)

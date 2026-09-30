@@ -42,6 +42,7 @@ defmodule EndPointBlank.AccessTokens do
   require Logger
 
   alias EndPointBlank.Commands.GenerateAccessToken
+  alias EndPointBlank.OutboundUrl
 
   @refresh_buffer_seconds 120
   @min_ttl_seconds 30
@@ -82,9 +83,12 @@ defmodule EndPointBlank.AccessTokens do
   Returns a valid access token for `base_url`, minting one if no usable entry
   covers it.
 
-  `base_url` is the URL you are about to call, with any query string and
-  fragment removed. It is sent verbatim; intake normalizes it and matches it
-  against registered base URLs by longest path prefix.
+  `base_url` is the URL you are about to call. Its userinfo, query and
+  fragment are removed first (`EndPointBlank.OutboundUrl.strip/1`): they are
+  never sent to intake, logged, or used as a cache or failure key. The rest is
+  sent as written; intake normalizes it and matches it against registered
+  base URLs by longest path prefix. A URL that is not a non-empty string, or
+  does not parse, is refused without asking intake.
 
   Returns `nil` rather than raising if a token cannot be produced -- which
   includes a response that carried a token but no `base_url` (nothing to
@@ -111,16 +115,33 @@ defmodule EndPointBlank.AccessTokens do
   the time the caller asks, which a concurrent caller's mint may already have
   replaced or cleared -- or `:token_cache_unavailable` when this cache did not
   answer at all (it was not running, or a mint against a hung intake outlasted
-  the #{@call_timeout_ms} ms the call allows). Never raises.
+  the #{@call_timeout_ms} ms the call allows). A `base_url` that is not a
+  non-empty string answers `{:error, :missing_base_url}`, and one that does
+  not parse `{:error, :invalid_base_url}`, without asking intake. Never
+  raises.
   """
-  @spec token_result(term()) :: {:ok, String.t()} | {:error, failure() | :token_cache_unavailable}
-  def token_result(base_url) do
-    call({:token, base_url}, {:error, :token_cache_unavailable})
+  @spec token_result(term()) ::
+          {:ok, String.t()}
+          | {:error, failure() | :token_cache_unavailable | :missing_base_url | :invalid_base_url}
+  def token_result(base_url) when is_binary(base_url) and base_url != "" do
+    case OutboundUrl.strip(base_url) do
+      {:ok, stripped} -> call({:token, stripped}, {:error, :token_cache_unavailable})
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  @doc "Returns true if a token covering `base_url` is held and not about to expire."
+  def token_result(_base_url), do: {:error, :missing_base_url}
+
+  @doc """
+  Returns true if a token covering `base_url` is held and not about to expire.
+
+  Userinfo, query and fragment are removed first, as for `token/1`.
+  """
   def exists?(base_url) do
-    call({:exists, base_url}, false)
+    case OutboundUrl.strip(base_url) do
+      {:ok, stripped} -> call({:exists, stripped}, false)
+      {:error, _reason} -> false
+    end
   end
 
   @doc """
@@ -128,8 +149,9 @@ defmodule EndPointBlank.AccessTokens do
   last one succeeded or none has been made.
 
   Pass the same URL you passed to `token/1`: the record is kept under the URL
-  the caller asked about, not under the canonical base URL intake resolved it
-  to, because on a failure there is no resolved base URL to key it under.
+  the caller asked about (with its userinfo, query and fragment removed), not
+  under the canonical base URL intake resolved it to, because on a failure
+  there is no resolved base URL to key it under.
 
   Only the #{@max_recorded_failures} most recently failed URLs are kept, so
   this answers `nil` for a URL whose failure has since been pushed out by
@@ -157,7 +179,10 @@ defmodule EndPointBlank.AccessTokens do
   """
   @spec last_failure(term()) :: failure() | nil
   def last_failure(base_url) do
-    call({:last_failure, base_url}, nil)
+    case OutboundUrl.strip(base_url) do
+      {:ok, stripped} -> call({:last_failure, stripped}, nil)
+      {:error, _reason} -> nil
+    end
   end
 
   defp call(message, on_failure) do
@@ -318,13 +343,12 @@ defmodule EndPointBlank.AccessTokens do
   end
 
   defp log_failure(base_url, reason) do
-    # inspect/1, not string interpolation: base_url is whatever a caller
-    # passed to token/1 or exists?/1, and String.Chars has no
-    # implementation for a map, tuple, PID, function, reference, port, or a
-    # non-codepoint list. Interpolating it directly would raise
-    # Protocol.UndefinedError right here, on the ordinary-miss path this
-    # very branch exists to keep safe -- the crash would just move one line
-    # rather than close. inspect/1 accepts any term.
+    # base_url reaches here only as OutboundUrl.strip/1's output, so it
+    # carries no userinfo, query or fragment. Still inspect/1, not string
+    # interpolation: should anything ever hand this GenServer a map, tuple,
+    # PID or the like, String.Chars would raise Protocol.UndefinedError right
+    # here, on the ordinary-miss path this very branch exists to keep safe.
+    # inspect/1 accepts any term.
     Logger.error(
       "[EndPointBlank] Failed to generate access token for #{inspect(base_url)}: #{describe(reason)}"
     )
@@ -332,7 +356,23 @@ defmodule EndPointBlank.AccessTokens do
 
   defp describe({:request_rejected, status}), do: "intake rejected the request: status=#{status}"
   defp describe({:server_error, status}), do: "intake failed: status=#{status}"
-  defp describe({:transport_error, reason}), do: "could not reach intake: #{inspect(reason)}"
+
+  defp describe({:transport_error, reason}),
+    do: "could not reach intake: #{transport_text(reason)}"
+
+  # generate_result/1 also answers :invalid_base_url, which cannot happen here
+  # since every entry point strips first; a clause for it, and for anything
+  # else, keeps this log line from killing the GenServer if that changes.
+  defp describe(_other), do: "unexpected failure"
+
+  # Not inspect/1: a transport error term can carry request data, including
+  # the Authorization header this SDK sends intake. Only an atom reason is
+  # written out.
+  defp transport_text(%Req.TransportError{reason: reason}) when is_atom(reason),
+    do: Atom.to_string(reason)
+
+  defp transport_text(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp transport_text(_reason), do: "unexpected error"
 
   # Failures are keyed by the URL the caller asked about, because a failed mint
   # has no resolved base URL to key on -- and the set of URLs a caller can ask

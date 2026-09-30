@@ -289,10 +289,13 @@ endpoint, since the authorization flow already reports the denial itself.
 
 `EndPointBlank.Authorization.header/1` is the public building block for your
 own outbound calls to *other* services protected by EndPointBlank (providers).
-Pass the URL you are about to call, **not a hostname**, with any query string
-or fragment stripped first — intake normalizes the base URL and matches it
-against registered base URLs by longest path prefix, so you do not need to
-know how the target registered itself:
+Pass the URL you are about to call, **not a hostname** — intake normalizes the
+base URL and matches it against registered base URLs by longest path prefix,
+so you do not need to know how the target registered itself. Its userinfo,
+query and fragment are removed before the token request; they are never sent
+to intake, logged, or kept on the error. A URL that does not parse, or has no
+scheme or host, is refused with `{:error, :invalid_base_url}` without asking
+intake:
 
 ```elixir
 url = "https://api.example.com/orders"
@@ -321,14 +324,20 @@ and why. Neither falls back to HTTP Basic. Until sc-1469 `header/1` did, which
 handed the credential to the provider. A missing or empty URL is
 `{:error, :missing_base_url}`; there is no no-argument `header/0`.
 
-`reason` is one of the failures below, plus `:missing_base_url` and
-`:token_cache_unavailable` (the token cache did not answer in time).
-`EndPointBlank.TokenUnavailableError` carries it as `:reason` alongside
-`:base_url` and `:status`, the HTTP status intake answered with (`401` for
+`reason` is one of the failures below, plus `:missing_base_url`,
+`:invalid_base_url` and `:token_cache_unavailable` (the token cache did not
+answer in time). `EndPointBlank.TokenUnavailableError` carries it as `:reason`
+alongside `:base_url` (the stripped URL, or `nil` when there was none that
+parsed) and `:status`, the HTTP status intake answered with (`401` for
 `:credential_rejected`, the status in `{:request_rejected, status}` or
-`{:server_error, status}`, otherwise `nil`). The message never `inspect`s a
-transport error, which can carry request data: it names only a known atom
-reason such as `timeout`, and the raw term stays on `:reason`.
+`{:server_error, status}`, otherwise `nil`). The message is built from fixed
+phrases, the same in every EndPointBlank SDK, and never repeats intake's
+response body, a transport error or an exception: for example "intake
+rejected this application's client credential (HTTP 401); retrying cannot
+help -- re-issue the credential", or "intake could not be reached (timeout,
+connection refused or retries exhausted); this may be transient". A mint that
+raised reads "the token request failed unexpectedly". The raw term stays on
+`:reason`.
 
 `EndPointBlank.AccessTokens` caches one token per application environment,
 keyed on the canonical base URL intake resolves the request to — not on the

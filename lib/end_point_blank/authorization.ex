@@ -22,13 +22,15 @@ defmodule EndPointBlank.Authorization do
   revoked credential.
   """
 
-  alias EndPointBlank.{AccessTokens, Config, TokenUnavailableError}
+  alias EndPointBlank.{AccessTokens, Config, OutboundUrl, TokenUnavailableError}
 
   @typedoc """
   Why no `Bearer` header could be produced for an outbound call.
 
     * `:missing_base_url` -- the URL passed was not a non-empty string, so
       there is nothing to mint a token for.
+    * `:invalid_base_url` -- the URL did not parse, or has no scheme or host.
+      Refused locally: nothing is sent to intake.
     * `:token_cache_unavailable` -- `EndPointBlank.AccessTokens` did not
       answer: it was not running, or a mint against a hung intake outlasted
       the call.
@@ -43,6 +45,7 @@ defmodule EndPointBlank.Authorization do
   """
   @type reason ::
           :missing_base_url
+          | :invalid_base_url
           | :token_cache_unavailable
           | :invalid_token
           | AccessTokens.failure()
@@ -51,10 +54,12 @@ defmodule EndPointBlank.Authorization do
   Returns a `Bearer` `Authorization` header value for an outbound call to a
   provider, or says why there is none.
 
-  `base_url` is the URL you are about to call, with any query string and
-  fragment removed. A token is minted if no usable one covers it yet: nothing
-  else mints the first token, so asking for one here, rather than first
-  checking whether one exists, is what makes the Bearer path reachable.
+  `base_url` is the URL you are about to call. Its userinfo, query and
+  fragment are removed before the token request (see
+  `EndPointBlank.OutboundUrl.strip/1`); they are never sent to intake, logged,
+  or kept on the error. A token is minted if no usable one covers it yet:
+  nothing else mints the first token, so asking for one here, rather than
+  first checking whether one exists, is what makes the Bearer path reachable.
 
   Returns `{:ok, "Bearer <token>"}`, or `{:error, reason}` (see `t:reason/0`)
   when no token could be obtained. Never raises, and never returns HTTP Basic:
@@ -63,12 +68,14 @@ defmodule EndPointBlank.Authorization do
   """
   @spec header(term()) :: {:ok, String.t()} | {:error, reason()}
   def header(base_url) when is_binary(base_url) and base_url != "" do
-    case AccessTokens.token_result(base_url) do
-      {:ok, token} when is_binary(token) and token != "" -> {:ok, "Bearer #{token}"}
-      # Unreachable while AccessTokens keeps its guarantee; refuse rather
-      # than raise a CaseClauseError if it ever breaks.
-      {:ok, _unusable} -> {:error, :invalid_token}
-      {:error, reason} -> {:error, reason}
+    with {:ok, stripped} <- OutboundUrl.strip(base_url) do
+      case AccessTokens.token_result(stripped) do
+        {:ok, token} when is_binary(token) and token != "" -> {:ok, "Bearer #{token}"}
+        # Unreachable while AccessTokens keeps its guarantee; refuse rather
+        # than raise a CaseClauseError if it ever breaks.
+        {:ok, _unusable} -> {:error, :invalid_token}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
@@ -76,7 +83,8 @@ defmodule EndPointBlank.Authorization do
 
   @doc """
   Like `header/1`, but returns the `Bearer` header value itself and raises
-  `EndPointBlank.TokenUnavailableError` when no token could be obtained.
+  `EndPointBlank.TokenUnavailableError` when no token could be obtained. The
+  exception's `:base_url` is the stripped URL, never the one passed in.
 
   Never returns HTTP Basic.
   """
