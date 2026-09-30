@@ -74,8 +74,30 @@ defmodule EndPointBlank.TokenUnavailableError do
   # The URL is written as-is, never `inspect`ed. Anything that is not a
   # non-empty string (the `:missing_base_url` case) could be any term at all,
   # so it is not written out either.
-  defp url_text(base_url) when is_binary(base_url) and base_url != "", do: base_url
+  # Scheme, host and path only. The caller controls `base_url`, and its
+  # userinfo, query or fragment can carry a secret; the message is what reaches
+  # logs and error reporting, so they are dropped here. The raw value stays on
+  # `:base_url`.
+  defp url_text(base_url) when is_binary(base_url) and base_url != "" do
+    case URI.new(base_url) do
+      {:ok, %URI{scheme: scheme, host: host} = uri}
+      when is_binary(scheme) and is_binary(host) and host != "" ->
+        "#{scheme}://#{bracket(host)}#{port_text(uri)}#{uri.path}"
+
+      _ ->
+        "the requested URL (not shown: it could not be parsed)"
+    end
+  end
+
   defp url_text(_base_url), do: "(no URL)"
+
+  defp bracket(host) do
+    if String.contains?(host, ":"), do: "[#{host}]", else: host
+  end
+
+  defp port_text(%URI{scheme: scheme, port: port}) do
+    if port == nil or port == URI.default_port(scheme), do: "", else: ":#{port}"
+  end
 
   defp describe(:missing_base_url) do
     "no URL was given to mint a token for (pass the URL you are about to call)"
