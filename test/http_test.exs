@@ -73,4 +73,27 @@ defmodule EndPointBlank.HttpTest do
                Http.post("https://example.test/x", %{a: 1}, "Basic abc")
     end
   end
+
+  describe "transport_error?/1 and describe_error/1 (sc-1469)" do
+    test "only a failure to reach the server is a transport error" do
+      assert Http.transport_error?(%Req.TransportError{reason: :timeout})
+      assert Http.transport_error?(:econnrefused)
+
+      refute Http.transport_error?(%RuntimeError{message: "boom"})
+      refute Http.transport_error?(%ArgumentError{message: "bad url"})
+      refute Http.transport_error?(%{request: :not_an_exception})
+      refute Http.transport_error?(nil)
+    end
+
+    test "a log line gets the atom reason or the module name, never the term" do
+      assert Http.describe_error(%Req.TransportError{reason: :timeout}) ==
+               "Req.TransportError (timeout)"
+
+      assert Http.describe_error(:econnrefused) == "econnrefused"
+      assert Http.describe_error(%RuntimeError{message: "s3cret"}) == "RuntimeError"
+
+      assert Http.describe_error(%{headers: [{"authorization", "Basic c2VjcmV0"}]}) ==
+               "unexpected error"
+    end
+  end
 end

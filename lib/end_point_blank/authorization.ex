@@ -22,7 +22,13 @@ defmodule EndPointBlank.Authorization do
   revoked credential.
   """
 
-  alias EndPointBlank.{AccessTokens, Config, OutboundUrl, TokenUnavailableError}
+  alias EndPointBlank.{
+    AccessTokens,
+    Config,
+    ConfigurationError,
+    OutboundUrl,
+    TokenUnavailableError
+  }
 
   @typedoc """
   Why no `Bearer` header could be produced for an outbound call.
@@ -38,6 +44,15 @@ defmodule EndPointBlank.Authorization do
       not a non-empty token string. `EndPointBlank.AccessTokens` guarantees it
       does not, so this is a defensive refusal for a broken guarantee rather
       than an outcome to plan for; treat it as transient.
+    * `:missing_credentials` -- `client_id` or `client_secret` is not
+      configured (nil or empty). Nothing is sent and retrying cannot help:
+      configure both. `header!/1` raises `EndPointBlank.ConfigurationError`
+      for it, not `EndPointBlank.TokenUnavailableError`.
+    * `{:unexpected, reason}` -- the mint raised, threw, or the HTTP client
+      answered something that is not a transport failure: a bug or a bad
+      setting, not intake being out of reach. `reason` is what was raised,
+      `{kind, term}` for a throw or exit, or the client's error term. The
+      Ruby SDK's `TokenUnavailableError#unexpected?` marks the same case.
     * Any `t:EndPointBlank.AccessTokens.failure/0` -- the mint itself failed.
       `:credential_rejected` (intake answered 401) and
       `{:request_rejected, status}` are permanent; `{:server_error, status}`
@@ -48,6 +63,8 @@ defmodule EndPointBlank.Authorization do
           | :invalid_base_url
           | :token_cache_unavailable
           | :invalid_token
+          | :missing_credentials
+          | {:unexpected, term()}
           | AccessTokens.failure()
 
   @doc """
@@ -62,9 +79,11 @@ defmodule EndPointBlank.Authorization do
   first checking whether one exists, is what makes the Bearer path reachable.
 
   Returns `{:ok, "Bearer <token>"}`, or `{:error, reason}` (see `t:reason/0`)
-  when no token could be obtained. Never raises, and never returns HTTP Basic:
-  on an error, do not make the call. `TokenUnavailableError.message/1` turns a
-  reason into a human-readable explanation; `header!/1` raises one.
+  when no token could be obtained -- `:missing_credentials` when `client_id`
+  or `client_secret` is not configured, without a request. Never raises, and
+  never returns HTTP Basic: on an error, do not make the call.
+  `TokenUnavailableError.message/2` turns a reason into a human-readable
+  explanation; `header!/1` raises one.
   """
   @spec header(term()) :: {:ok, String.t()} | {:error, reason()}
   def header(base_url) when is_binary(base_url) and base_url != "" do
@@ -83,8 +102,15 @@ defmodule EndPointBlank.Authorization do
 
   @doc """
   Like `header/1`, but returns the `Bearer` header value itself and raises
-  `EndPointBlank.TokenUnavailableError` when no token could be obtained. The
-  exception's `:base_url` is the stripped URL, never the one passed in.
+  when there is none:
+
+    * `EndPointBlank.ConfigurationError` when `client_id` or `client_secret`
+      is not configured (`:missing_credentials`); nothing is sent.
+    * `EndPointBlank.TokenUnavailableError` for every other reason, including
+      a missing or unparseable URL (the Ruby SDK raises `ArgumentError` for
+      those) and a mint that failed unexpectedly (its `:unexpected` is
+      `true`). The exception's `:base_url` is the stripped URL, never the one
+      passed in.
 
   Never returns HTTP Basic.
   """
@@ -92,6 +118,7 @@ defmodule EndPointBlank.Authorization do
   def header!(base_url) do
     case header(base_url) do
       {:ok, value} -> value
+      {:error, :missing_credentials} -> raise ConfigurationError
       {:error, reason} -> raise TokenUnavailableError, base_url: base_url, reason: reason
     end
   end

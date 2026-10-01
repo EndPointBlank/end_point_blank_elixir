@@ -26,6 +26,22 @@ defmodule EndPointBlank.OutboundUrlTest do
     assert OutboundUrl.strip("http://api.test:443/orders") == {:ok, "http://api.test:443/orders"}
   end
 
+  test "drops an empty port, as the default it means" do
+    assert OutboundUrl.strip("https://api.test:/orders") == {:ok, "https://api.test/orders"}
+    assert OutboundUrl.strip("http://api.test:/orders") == {:ok, "http://api.test/orders"}
+  end
+
+  test "lowercases the scheme and host, but not the path" do
+    assert OutboundUrl.strip("HTTPS://API.Example.TEST:443/Orders") ==
+             {:ok, "https://api.example.test/Orders"}
+
+    assert OutboundUrl.strip("HTTP://[FE80::1]:8080/x") == {:ok, "http://[fe80::1]:8080/x"}
+  end
+
+  test "refuses a non-numeric port" do
+    assert OutboundUrl.strip("https://api.test:abc/orders") == {:error, :invalid_base_url}
+  end
+
   test "keeps an IPv6 host in brackets" do
     assert OutboundUrl.strip("http://[::1]:4001/orders?x=1") == {:ok, "http://[::1]:4001/orders"}
   end

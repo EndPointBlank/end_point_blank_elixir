@@ -39,6 +39,11 @@ defmodule EndPointBlank.Commands.GenerateAccessToken do
       looks.
     * `{:transport_error, reason}` -- no HTTP status was obtained at all:
       connection refused, timeout, `Http.post/3`'s three attempts exhausted.
+      Only a real transport failure lands here (a `Req.TransportError` or
+      `Req.HTTPError`, their Mint/Finch equivalents, or an atom such as
+      `:timeout`); anything else the HTTP client hands back is
+      `{:unexpected, reason}`, which `generate_result/1` answers but which is
+      not a `t:failure/0`.
   """
   @type failure ::
           :credential_rejected
@@ -64,17 +69,46 @@ defmodule EndPointBlank.Commands.GenerateAccessToken do
   which reasons are permanent and which are worth retrying. A `base_url` that
   does not parse, or is not a string, answers `{:error, :invalid_base_url}`
   without a request.
+
+  Two answers are not intake's verdict and are not a `t:failure/0`:
+
+    * `{:error, :missing_credentials}` -- `client_id` or `client_secret` is
+      nil or empty, so nothing is sent. Sending it anyway would go out as
+      `Basic` of `":"` and come back as a 401 that reads as a revoked
+      credential (sc-1469).
+    * `{:error, {:unexpected, reason}}` -- the HTTP client answered an error
+      that is not a transport failure (see `t:failure/0`): a bug or a
+      bad setting, not intake being out of reach. Anything raised while
+      minting propagates as itself; `EndPointBlank.AccessTokens` reports it the
+      same way.
   """
-  @spec generate_result(term()) :: {:ok, map()} | {:error, failure() | :invalid_base_url}
+  @spec generate_result(term()) ::
+          {:ok, map()}
+          | {:error, failure() | :invalid_base_url | :missing_credentials | {:unexpected, term()}}
   def generate_result(base_url) do
     case OutboundUrl.strip(base_url) do
-      {:ok, stripped} -> request(stripped)
+      {:ok, stripped} -> request(stripped, Config.get())
       {:error, :invalid_base_url} -> {:error, :invalid_base_url}
     end
   end
 
-  defp request(base_url) do
-    config = Config.get()
+  defp request(base_url, config) do
+    if blank?(config.client_id) or blank?(config.client_secret) do
+      Logger.error(
+        "[EndPointBlank] Access token not requested: client_id or client_secret is not " <>
+          "configured. Set both with EndPointBlank.configure/1 or ENDPOINTBLANK_CLIENT_ID / " <>
+          "ENDPOINTBLANK_CLIENT_SECRET."
+      )
+
+      {:error, :missing_credentials}
+    else
+      send_request(base_url, config)
+    end
+  end
+
+  defp blank?(value), do: value in [nil, ""]
+
+  defp send_request(base_url, config) do
     body = %{base_url: base_url, token_ttl: config.token_ttl}
     auth = Authorization.basic_header()
 
@@ -106,9 +140,23 @@ defmodule EndPointBlank.Commands.GenerateAccessToken do
         Logger.error("[EndPointBlank] GenerateAccessToken failed: status=#{s}")
         {:error, classify(s)}
 
+      # Only a real transport failure is a :transport_error, and the log line
+      # names its atom reason or exception module, never inspect/1 of the
+      # term: that can carry the request, Authorization header included.
       {:error, reason} ->
-        Logger.error("[EndPointBlank] GenerateAccessToken error: #{inspect(reason)}")
-        {:error, {:transport_error, reason}}
+        if Http.transport_error?(reason) do
+          Logger.error(
+            "[EndPointBlank] GenerateAccessToken error: #{Http.describe_error(reason)}"
+          )
+
+          {:error, {:transport_error, reason}}
+        else
+          Logger.error(
+            "[EndPointBlank] GenerateAccessToken failed unexpectedly: #{Http.describe_error(reason)}"
+          )
+
+          {:error, {:unexpected, reason}}
+        end
     end
   end
 

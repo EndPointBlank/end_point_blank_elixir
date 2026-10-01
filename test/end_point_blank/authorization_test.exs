@@ -141,11 +141,38 @@ defmodule EndPointBlank.AuthorizationTest do
       stub_intake_and_provider(fn _conn -> raise "intake exploded" end)
 
       capture_log(fn ->
-        assert {:error, {:transport_error, _}} = Authorization.header(base_url)
+        assert {:error, {:unexpected, _raised}} = Authorization.header(base_url)
       end)
 
       assert Process.whereis(EndPointBlank.AccessTokens) |> Process.alive?()
       assert_only_intake_was_called()
+
+      # A raise is not intake's verdict on this URL, so it is not recorded as
+      # one (sc-1469): last_failure/1 must not send anyone to check the network.
+      assert AccessTokens.last_failure(base_url) == nil
+    end
+
+    test "refuses without a request when client_id or client_secret is missing",
+         %{base_url: base_url} do
+      # Sending it anyway would go out as Basic of ":" and come back as a 401,
+      # reported as "re-issue the credential" for what is a missing setting.
+      stub_intake_and_provider(fn conn -> respond(conn, 401) end)
+
+      for missing <- [[client_id: ""], [client_secret: ""], [client_id: "", client_secret: ""]] do
+        Config.update(client_id: "cid", client_secret: "csecret")
+        Config.update(missing)
+
+        log =
+          capture_log(fn ->
+            assert Authorization.header(base_url) == {:error, :missing_credentials}
+          end)
+
+        assert log =~ "client_id or client_secret is not configured"
+      end
+
+      refute_received {:intake, _path, _auth}
+      refute_received {:provider, _auth}
+      assert AccessTokens.last_failure(base_url) == nil
     end
 
     test "strips userinfo, query and fragment before asking intake for a token",
@@ -248,6 +275,7 @@ defmodule EndPointBlank.AuthorizationTest do
 
       assert {:transport_error, %Req.TransportError{reason: :timeout}} = error.reason
       assert error.status == nil
+      assert error.unexpected == false
       assert error.message =~ "intake could not be reached (timeout, connection refused"
       refute error.message =~ "Req.TransportError"
 
@@ -262,7 +290,9 @@ defmodule EndPointBlank.AuthorizationTest do
           assert_raise TokenUnavailableError, fn -> Authorization.header!(base_url) end
         end)
 
-      assert {:transport_error, _raised} = error.reason
+      assert {:unexpected, %RuntimeError{}} = error.reason
+      assert error.unexpected == true
+      assert error.status == nil
       assert error.message =~ "the token request failed unexpectedly"
       refute error.message =~ "exploded"
       refute error.message =~ "csecret"
@@ -286,6 +316,22 @@ defmodule EndPointBlank.AuthorizationTest do
       end
     end
 
+    test "raises ConfigurationError, not TokenUnavailableError, when a credential is missing",
+         %{base_url: base_url} do
+      stub_intake_and_provider(fn conn -> respond(conn, 401) end)
+      Config.update(client_secret: "")
+
+      {error, _log} =
+        with_log(fn ->
+          assert_raise EndPointBlank.ConfigurationError, fn -> Authorization.header!(base_url) end
+        end)
+
+      assert error.message =~ "missing client_id or client_secret"
+      refute error.message =~ "re-issue"
+      refute_received {:intake, _path, _auth}
+      refute_received {:provider, _auth}
+    end
+
     test "raises TokenUnavailableError for an unparseable URL, keeping no URL" do
       bad = "not a url ?token=s3cret"
       error = assert_raise TokenUnavailableError, fn -> Authorization.header!(bad) end
@@ -307,6 +353,8 @@ defmodule EndPointBlank.AuthorizationTest do
             {:request_rejected, 422},
             {:server_error, 503},
             {:transport_error, %Req.TransportError{reason: :timeout}},
+            {:unexpected, %RuntimeError{message: "boom"}},
+            :missing_credentials,
             nil
           ] do
         message = TokenUnavailableError.message("https://api.example.test/orders", reason)
@@ -350,6 +398,25 @@ defmodule EndPointBlank.AuthorizationTest do
       end
     end
 
+    test "marks a mint that failed unexpectedly, and nothing else" do
+      for {reason, unexpected} <- [
+            {{:unexpected, %RuntimeError{message: "boom"}}, true},
+            {{:unexpected, {:throw, :boom}}, true},
+            {{:transport_error, %{request: :not_a_transport_error}}, true},
+            {{:transport_error, %Req.TransportError{reason: :timeout}}, false},
+            {{:transport_error, :econnrefused}, false},
+            {:credential_rejected, false},
+            {{:server_error, 503}, false},
+            {:missing_credentials, false},
+            {nil, false}
+          ] do
+        assert TokenUnavailableError.unexpected?(reason) == unexpected
+
+        error = TokenUnavailableError.exception(base_url: "https://a.test", reason: reason)
+        assert error.unexpected == unexpected
+      end
+    end
+
     test "does not describe a URL that is not a string" do
       message = TokenUnavailableError.message(%{secret: "s3cr3t"}, :missing_base_url)
 
@@ -366,6 +433,8 @@ defmodule EndPointBlank.AuthorizationTest do
             {{:transport_error, :econnrefused}, nil},
             {:token_cache_unavailable, nil},
             {:invalid_token, nil},
+            {{:unexpected, %RuntimeError{message: "boom"}}, nil},
+            {:missing_credentials, nil},
             {:missing_base_url, nil},
             {nil, nil}
           ] do

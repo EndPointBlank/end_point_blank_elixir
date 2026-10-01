@@ -127,6 +127,39 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
     assert log =~ "403"
   end
 
+  test "sends nothing and answers :missing_credentials when a credential is missing" do
+    # Sending it anyway would go out as Basic of ":" and come back as a 401,
+    # which reads as a revoked credential (sc-1469).
+    stub(fn conn -> conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{}) end)
+
+    for missing <- [[client_id: ""], [client_secret: ""]] do
+      Config.update(client_id: "cid", client_secret: "csecret")
+      Config.update(missing)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, :missing_credentials}
+        end)
+
+      assert log =~ "client_id or client_secret is not configured"
+    end
+
+    refute_received {:token_request, _path, _body, _auth}
+  end
+
+  test "logs a transport error by its reason, never the whole term" do
+    stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
+
+    log =
+      capture_log(fn ->
+        GenerateAccessToken.generate_result("https://api.example.com/orders")
+      end)
+
+    assert log =~ "GenerateAccessToken error: Req.TransportError (econnrefused)"
+    refute log =~ "%Req.TransportError{"
+  end
+
   test "returns nil and logs when intake cannot be reached" do
     stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
 

@@ -16,8 +16,9 @@
     `{:request_rejected, status}`, `{:server_error, status}`,
     `{:transport_error, reason}`), `:token_cache_unavailable`,
     `:invalid_token` (a defensive refusal should the token cache ever answer
-    without a usable token), `:missing_base_url`, or `:invalid_base_url`. On
-    an error, do not make the call.
+    without a usable token), `:missing_base_url`, `:invalid_base_url`,
+    `:missing_credentials`, or `{:unexpected, reason}`. On an error, do not
+    make the call.
   - New `header!/1` returns the `"Bearer <token>"` string or raises the new
     `EndPointBlank.TokenUnavailableError` (fields `:base_url`, `:reason`,
     `:status`, `:message`). The message says the token could not be minted,
@@ -61,6 +62,28 @@
   - `header/0` is gone; it always answered Basic, for writers and host
     code alike. `header(nil)` and `header("")`, which also answered Basic,
     now answer `{:error, :missing_base_url}`.
+  - A missing `client_id` or `client_secret` (nil or empty) is refused
+    before any request: `header/1` answers `{:error, :missing_credentials}`,
+    `header!/1` raises the new `EndPointBlank.ConfigurationError`, and
+    `GenerateAccessToken.generate_result/1` answers
+    `{:error, :missing_credentials}`. The request used to go out as Basic of
+    `":"`, intake answered 401, and the error said to re-issue the credential.
+  - Only a real failure to reach intake (`Req.TransportError`,
+    `Req.HTTPError`, the Mint/Finch equivalents, or an atom such as
+    `:timeout`) is `{:transport_error, reason}`. A mint that raised or threw,
+    or an HTTP-client error that is not a transport failure, is now
+    `{:unexpected, reason}` (it was `{:transport_error, reason}`):
+    `TokenUnavailableError` has a new `:unexpected` field, `true` for it, and
+    `TokenUnavailableError.unexpected?/1` derives it from a `header/1` error.
+    Neither `:missing_credentials` nor `{:unexpected, _}` is recorded for
+    `AccessTokens.last_failure/1` or drops a held token.
+  - `OutboundUrl.strip/1` also lowercases the scheme and host and drops an
+    empty port (`https://api.test:/x`) along with a default one; a
+    non-numeric port is refused with `:invalid_base_url`.
+  - The HTTP retry log line and the access-token error log line no longer
+    `inspect` the transport error; they name its atom reason or exception
+    module only. A mint that raised logs the exception's module, not its
+    message.
   - Migrating: replace `auth = Authorization.header(url)` with
     `{:ok, auth} = Authorization.header(url)` plus an error branch, or with
     `auth = Authorization.header!(url)`. Do not rescue the error and send

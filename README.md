@@ -292,10 +292,14 @@ own outbound calls to *other* services protected by EndPointBlank (providers).
 Pass the URL you are about to call, **not a hostname** — intake normalizes the
 base URL and matches it against registered base URLs by longest path prefix,
 so you do not need to know how the target registered itself. Its userinfo,
-query and fragment are removed before the token request; they are never sent
-to intake, logged, or kept on the error. A URL that does not parse, or has no
-scheme or host, is refused with `{:error, :invalid_base_url}` without asking
-intake:
+query and fragment are removed before the token request, the scheme and host
+are lowercased, and a default port (`:443` for https, `:80` for http) or an
+empty one is dropped; userinfo, query and fragment are never sent to intake,
+logged, or kept on the error. A URL that does not parse, has no scheme or
+host, or has a non-numeric port is refused with `{:error, :invalid_base_url}`
+without asking intake. `header!/1` raises `EndPointBlank.TokenUnavailableError`
+for it (reason `:invalid_base_url`, or `:missing_base_url` for a missing URL);
+the Ruby SDK raises `ArgumentError` for both:
 
 ```elixir
 url = "https://api.example.com/orders"
@@ -312,9 +316,16 @@ case EndPointBlank.Authorization.header(url) do
     {:error, EndPointBlank.TokenUnavailableError.message(url, reason)}
 end
 
-# Or, raising EndPointBlank.TokenUnavailableError instead:
+# Or, raising EndPointBlank.TokenUnavailableError (or
+# EndPointBlank.ConfigurationError, below) instead:
 auth = EndPointBlank.Authorization.header!(url)
 ```
+
+If `client_id` or `client_secret` is not configured (nil or empty), nothing
+is sent: `header/1` answers `{:error, :missing_credentials}` and `header!/1`
+raises `EndPointBlank.ConfigurationError`. Before, the token request went out
+with an empty credential, intake answered 401, and the error said to re-issue
+a credential that had simply never been set.
 
 **Your `client_id`/`client_secret` is never sent to a provider.** When a token
 cannot be minted — intake is down or times out, answers 5xx, or rejects the
@@ -325,12 +336,17 @@ handed the credential to the provider. A missing or empty URL is
 `{:error, :missing_base_url}`; there is no no-argument `header/0`.
 
 `reason` is one of the failures below, plus `:missing_base_url`,
-`:invalid_base_url` and `:token_cache_unavailable` (the token cache did not
-answer in time). `EndPointBlank.TokenUnavailableError` carries it as `:reason`
-alongside `:base_url` (the stripped URL, or `nil` when there was none that
-parsed) and `:status`, the HTTP status intake answered with (`401` for
-`:credential_rejected`, the status in `{:request_rejected, status}` or
-`{:server_error, status}`, otherwise `nil`). The message is built from fixed
+`:invalid_base_url`, `:missing_credentials`, `:token_cache_unavailable` (the
+token cache did not answer in time) and `{:unexpected, reason}`: the mint
+raised, threw, or the HTTP client answered something that is not a transport
+failure — a bug or a bad setting, not intake being out of reach. Only a real
+failure to reach intake (a timeout, a refused connection) is
+`{:transport_error, reason}`. `EndPointBlank.TokenUnavailableError` carries
+the reason as `:reason` alongside `:base_url` (the stripped URL, or `nil` when
+there was none that parsed), `:status`, the HTTP status intake answered with
+(`401` for `:credential_rejected`, the status in `{:request_rejected, status}`
+or `{:server_error, status}`, otherwise `nil`), and `:unexpected`, `true` for
+`{:unexpected, _}`. The message is built from fixed
 phrases, the same in every EndPointBlank SDK, and never repeats intake's
 response body, a transport error or an exception: for example "intake
 rejected this application's client credential (HTTP 401); retrying cannot
@@ -379,6 +395,9 @@ Classification is on the HTTP status alone; the body never overrides a status
 that was actually received. A 401 whose body is not JSON — which is what a
 proxy or gateway in front of intake answers — is still `:credential_rejected`.
 `{:transport_error, reason}` means no HTTP status was obtained at all.
+`last_failure/1` records only what intake's answer (or its absence) says:
+`:missing_credentials` and `{:unexpected, _}` are answered by `header/1` and
+`token_result/1` but never recorded, and do not drop a held token.
 
 A successful mint clears the record, and only the 64 most recently failed
 URLs are held — ask about a URL you just called and it will be there.
@@ -604,6 +623,7 @@ lib/end_point_blank.ex                    # configure/1, version/0
 lib/end_point_blank/config.ex             # settings + ENDPOINTBLANK_* env fallback
 lib/end_point_blank/authorization.ex      # Authorization header builder (Bearer-only for providers)
 lib/end_point_blank/token_unavailable_error.ex # raised by Authorization.header!/1
+lib/end_point_blank/configuration_error.ex # raised by Authorization.header!/1 when a credential is missing
 lib/end_point_blank/auth_cache.ex         # ETS-backed authorization result cache
 lib/end_point_blank/access_tokens.ex      # per-application-environment access-token cache, keyed on base URL
 lib/end_point_blank/request_store.ex      # per-process request-scoped state

@@ -78,9 +78,12 @@ defmodule EndPointBlank.TokenUnavailableErrorMessageTest do
 
     test "the mint threw" do
       for reason <- [
-            {:transport_error, %RuntimeError{message: "exploded with s3cret"}},
-            {:transport_error, {:throw, "s3cret"}},
-            {:transport_error, {:exit, "s3cret"}}
+            {:unexpected, %RuntimeError{message: "exploded with s3cret"}},
+            {:unexpected, {:throw, "s3cret"}},
+            {:unexpected, {:exit, "s3cret"}},
+            {:unexpected, %ArgumentError{message: "s3cret"}},
+            # Not a transport failure, whatever it is tagged: still unexpected.
+            {:transport_error, %RuntimeError{message: "exploded with s3cret"}}
           ] do
         assert TokenUnavailableError.message(@url, reason) ==
                  @prefix <> "the token request failed unexpectedly" <> @suffix
