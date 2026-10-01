@@ -295,9 +295,10 @@ so you do not need to know how the target registered itself. Its userinfo,
 query and fragment are removed before the token request, the scheme and host
 are lowercased, and a default port (`:443` for https, `:80` for http) or an
 empty one is dropped; userinfo, query and fragment are never sent to intake,
-logged, or kept on the error. A URL that does not parse, has no scheme or
-host, or has a non-numeric port is refused with `{:error, :invalid_base_url}`
-without asking intake. `header!/1` raises `EndPointBlank.TokenUnavailableError`
+logged, or kept on the error. A URL that does not parse, has no host, has a
+scheme other than `http` or `https`, or has a port that is not a number from
+1 to 65535 is refused with `{:error, :invalid_base_url}` without asking
+intake. `header!/1` raises `EndPointBlank.TokenUnavailableError`
 for it (reason `:invalid_base_url`, or `:missing_base_url` for a missing URL);
 the Ruby SDK raises `ArgumentError` for both:
 
@@ -325,7 +326,9 @@ If `client_id` or `client_secret` is not configured (nil or empty), nothing
 is sent: `header/1` answers `{:error, :missing_credentials}` and `header!/1`
 raises `EndPointBlank.ConfigurationError`. Before, the token request went out
 with an empty credential, intake answered 401, and the error said to re-issue
-a credential that had simply never been set.
+a credential that had simply never been set. Only `header/1` and `header!/1`
+refuse this way: the plugs, the endpoint update at boot and the writers go on
+returning or logging a failure, never raising into your application.
 
 **Your `client_id`/`client_secret` is never sent to a provider.** When a token
 cannot be minted — intake is down or times out, answers 5xx, or rejects the

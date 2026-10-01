@@ -840,13 +840,20 @@ defmodule EndPointBlank.AccessTokensTest do
       end)
 
       Config.update(client_secret: "")
+      pid = Process.whereis(AccessTokens)
 
       capture_log(fn ->
         assert AccessTokens.token_result(base) == {:error, :missing_credentials}
+        assert AccessTokens.token(base) == nil
+        assert AccessTokens.exists?(base) == false
       end)
 
       refute_received :intake_called
       assert AccessTokens.last_failure(base) == nil
+
+      # Answered, not raised: this GenServer is shared by every caller.
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
     end
 
     test "records a 2xx it cannot cache as a server error, not a rejected credential",

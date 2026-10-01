@@ -38,8 +38,32 @@ defmodule EndPointBlank.OutboundUrlTest do
     assert OutboundUrl.strip("HTTP://[FE80::1]:8080/x") == {:ok, "http://[fe80::1]:8080/x"}
   end
 
-  test "refuses a non-numeric port" do
-    assert OutboundUrl.strip("https://api.test:abc/orders") == {:error, :invalid_base_url}
+  test "refuses a port that is not a number from 1 to 65535" do
+    for bad <- [
+          "https://api.test:abc/orders",
+          "https://api.test:0/orders",
+          "https://api.test:65536/orders",
+          "http://api.test:99999/orders"
+        ] do
+      assert OutboundUrl.strip(bad) == {:error, :invalid_base_url}
+    end
+
+    assert OutboundUrl.strip("https://api.test:1/orders") == {:ok, "https://api.test:1/orders"}
+
+    assert OutboundUrl.strip("https://api.test:65535/orders") ==
+             {:ok, "https://api.test:65535/orders"}
+  end
+
+  test "refuses any scheme other than http and https" do
+    for bad <- [
+          "ftp://files.test:21/x",
+          "ws://api.test/socket",
+          "wss://api.test/socket",
+          "file:///etc/passwd",
+          "custom://api.test/orders"
+        ] do
+      assert OutboundUrl.strip(bad) == {:error, :invalid_base_url}
+    end
   end
 
   test "keeps an IPv6 host in brackets" do

@@ -186,6 +186,21 @@ defmodule EndPointBlank.Plug.AuthorizedTest do
     end
   end
 
+  describe "when a credential is missing" do
+    test "halts the request rather than raising into the host's pipeline", ctx do
+      # A missing client_secret is refused before any request on the outbound
+      # token path (sc-1469). The plug's own call to intake must still only
+      # refuse the request, never raise out of the host's pipeline.
+      stub(fn conn -> conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{}) end)
+      Config.update(client_secret: "")
+
+      conn = capture_log_result(fn -> call(ctx) end)
+
+      assert conn.halted
+      assert conn.status >= 400
+    end
+  end
+
   # Runs `fun` with its log suppressed and returns its value.
   defp capture_log_result(fun) do
     parent = self()

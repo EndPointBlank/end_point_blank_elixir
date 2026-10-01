@@ -78,8 +78,12 @@
     Neither `:missing_credentials` nor `{:unexpected, _}` is recorded for
     `AccessTokens.last_failure/1` or drops a held token.
   - `OutboundUrl.strip/1` also lowercases the scheme and host and drops an
-    empty port (`https://api.test:/x`) along with a default one; a
-    non-numeric port is refused with `:invalid_base_url`.
+    empty port (`https://api.test:/x`) along with a default one. A scheme
+    other than `http` or `https`, or a port that is not a number from 1 to
+    65535, is refused with `:invalid_base_url`.
+  - The plugs, the endpoint update at boot, the writers and the
+    `AccessTokens` GenServer still never raise for a missing credential or
+    an unexpected mint failure: they return or log, as before.
   - The HTTP retry log line and the access-token error log line no longer
     `inspect` the transport error; they name its atom reason or exception
     module only. A mint that raised logs the exception's module, not its

@@ -111,6 +111,18 @@ defmodule EndPointBlank.Writers.DirectWriterTest do
       assert log =~ "422"
     end
 
+    test "returns rather than raising when a credential is missing" do
+      # A missing client_secret is refused before any request on the outbound
+      # token path (sc-1469). That refusal must not reach the writers: they
+      # run in the host's request path, and they still return or log.
+      stub(fn conn -> conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{}) end)
+      Config.update(client_secret: "")
+
+      log = capture_log(fn -> assert DirectWriter.write(:logs, [%{a: 1}]) == :error end)
+
+      assert log =~ "Write to logs failed"
+    end
+
     test "returns :error rather than raising when intake is unreachable" do
       stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
 

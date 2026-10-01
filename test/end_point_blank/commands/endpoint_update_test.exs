@@ -109,6 +109,18 @@ defmodule EndPointBlank.Commands.EndpointUpdateTest do
       assert log =~ "422"
     end
 
+    test "returns :error rather than crashing boot when a credential is missing" do
+      # This runs from the host application's start/2. A missing client_secret
+      # is refused before any request on the outbound token path (sc-1469);
+      # here it must still only log, never stop the host from booting.
+      stub(fn conn -> conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{}) end)
+      Config.update(client_secret: "")
+
+      log = capture_log(fn -> assert EndpointUpdate.update(@endpoints) == :error end)
+
+      assert log =~ "Endpoint update failed"
+    end
+
     test "returns :error rather than crashing boot when intake is unreachable" do
       # This runs from the host application's start/2; raising here would stop
       # the application from booting at all.
