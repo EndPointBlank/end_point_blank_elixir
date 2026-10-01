@@ -108,9 +108,39 @@
 - `EndPointBlank.AccessTokens.token_result/1`: `{:ok, token}` or
   `{:error, reason}` with the reason for that very mint. `token/1` still
   answers the token or `nil`.
+- **The intake hostname can be derived from `client_id` (sc-1463), off by
+  default.** New credentials carry their organization's slug as a prefix
+  (`acima-x7k2mq.<random>`), and that organization's intake answers at
+  `https://<slug>.in.endpointblank.com`. With the new
+  `derive_base_url_from_client_id: true`, the SDK calls that hostname when
+  neither `:base_url` nor `ENDPOINTBLANK_BASE_URL` is set. It derives only when
+  the part before the first `.` has the exact shape of an organization slug
+  and something follows the dot (`EndPointBlank.Config.client_id_slug/1`, the
+  same rule as app_portal's `Credentials.client_id_slug/1`); any other
+  `client_id`, including a legacy `my.client`, calls
+  `https://in.endpointblank.com` as before. The option defaults to `false`
+  because `*.in.endpointblank.com` has no DNS or TLS in production yet; with it
+  off, every `client_id` resolves exactly as in 0.8.0. It will default to
+  `true` in a later release, once DNS and TLS are live. A value other than
+  `true` or `false` is refused by `configure/1` with `ArgumentError`. The logs
+  hostname (`:log_base_url`) is never derived.
+- **Every call to intake sends `x-epb-sdk: elixir/<version>` (sc-1463)**, with
+  the version of this library as loaded. intake ignores it today; it will
+  record the oldest version seen per credential for the move gate. **This
+  release is not that gate's minimum Elixir version:** derivation is off by
+  default here, so a host on this version with the default config keeps
+  calling `in.endpointblank.com` after its organization moves. The minimum is
+  the release that turns `derive_base_url_from_client_id` on by default.
 
 ### Unchanged
 
+- A 503 or a 429 from intake is never cached (sc-1463 conformance, now pinned
+  by tests): the authorization cache stores only a 201, and the token cache
+  stores only a token, so the next call asks intake again. The token cache is
+  still keyed on the `base_url` the mint response returns, and a 2xx without
+  one is still a failed mint, `{:server_error, status}`. intake sends
+  `base_url` on every successful mint, and this SDK has required it since
+  0.6.0.
 - Calls to this SDK's own intake — authorize, token minting, endpoint updates
   and the request/response/log/error writers — still authenticate with Basic,
   now via `Authorization.intake_header/0`, which refuses when a credential is

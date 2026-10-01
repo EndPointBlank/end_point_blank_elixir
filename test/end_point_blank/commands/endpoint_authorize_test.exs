@@ -366,6 +366,72 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
     end
   end
 
+  # sc-1463 conformance: intake answers 503 and 429 about the moment, not the
+  # grant. Caching either would keep refusing for the whole TTL after intake
+  # recovered.
+  describe "a 503 or a 429 from intake" do
+    for status <- [503, 429] do
+      test "#{status} is not cached, and the next request authorizes once intake does", ctx do
+        stub_intake(%{@authorize_path => responding(unquote(status), %{"error" => "busy"})})
+
+        capture_log(fn ->
+          assert {:error, unquote(status), _} = EndpointAuthorize.authorize(conn(ctx))
+          sync_cache()
+        end)
+
+        stub_intake(%{@authorize_path => authorized()})
+        assert {:ok, %Plug.Conn{}} = EndpointAuthorize.authorize(conn(ctx))
+
+        assert length(authorize_calls()) == 2
+      end
+    end
+  end
+
+  # sc-1463: with derivation on, a prefixed client_id sends every intake call
+  # to its organization's hostname; off, to the configured or default one.
+  describe "the intake it calls" do
+    test "is the organization's hostname when derivation is on and no base_url is set", ctx do
+      test_pid = self()
+
+      Config.reset()
+
+      Config.update(
+        app_name: "test-app",
+        client_id: "acima-x7k2mq.ijXI+MVwmrC5xH/9ZuGiQlAbAyobTqMa",
+        client_secret: "csecret",
+        derive_base_url_from_client_id: true
+      )
+
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        send(test_pid, {:called, conn.scheme, conn.host, conn.request_path})
+        conn |> Plug.Conn.put_status(201) |> Req.Test.json(intake_authorize_body())
+      end)
+
+      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      assert_received {:called, :https, "acima-x7k2mq.in.endpointblank.com", @authorize_path}
+    end
+
+    test "is the default intake when derivation is off, whatever the client_id", ctx do
+      test_pid = self()
+
+      Config.reset()
+
+      Config.update(
+        app_name: "test-app",
+        client_id: "acima-x7k2mq.ijXI+MVwmrC5xH/9ZuGiQlAbAyobTqMa",
+        client_secret: "csecret"
+      )
+
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        send(test_pid, {:called, conn.scheme, conn.host, conn.request_path})
+        conn |> Plug.Conn.put_status(201) |> Req.Test.json(intake_authorize_body())
+      end)
+
+      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      assert_received {:called, :https, "in.endpointblank.com", @authorize_path}
+    end
+  end
+
   describe "what the cache key distinguishes" do
     setup ctx do
       stub_intake(%{@authorize_path => authorized()})

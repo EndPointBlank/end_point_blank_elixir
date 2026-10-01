@@ -49,6 +49,7 @@ defmodule EndPointBlank.Config do
   use Agent
 
   @default_base_url "https://in.endpointblank.com"
+  @derived_base_url_suffix ".in.endpointblank.com"
   @default_log_base_url "https://log.endpointblank.com"
   @default_cache_ttl 300
 
@@ -77,7 +78,8 @@ defmodule EndPointBlank.Config do
     worker_count: 4,
     cache_ttl: @default_cache_ttl,
     trust_proxy_headers: true,
-    masking_rules: []
+    masking_rules: [],
+    derive_base_url_from_client_id: false
   ]
 
   defstruct @struct_fields
@@ -182,6 +184,7 @@ defmodule EndPointBlank.Config do
     case unknown_keys(opts) do
       [] ->
         validate_cache_ttl!(opts)
+        validate_derive_base_url!(opts)
 
         Agent.update(__MODULE__, fn config ->
           opts
@@ -229,6 +232,23 @@ defmodule EndPointBlank.Config do
     end)
   end
 
+  # Only a boolean: a string "true" from an env var must not quietly leave
+  # derivation off, and nothing else has a sensible reading.
+  defp validate_derive_base_url!(opts) do
+    opts
+    |> Keyword.get_values(:derive_base_url_from_client_id)
+    |> Enum.each(fn
+      value when is_boolean(value) ->
+        :ok
+
+      invalid ->
+        raise ArgumentError,
+              "EndPointBlank.configure/1 (EndPointBlank.Config.update/1) received an " <>
+                "invalid :derive_base_url_from_client_id: #{inspect(invalid)}. It must be " <>
+                "true or false."
+    end)
+  end
+
   @doc false
   def reset, do: Agent.update(__MODULE__, fn _ -> publish(%__MODULE__{}) end)
 
@@ -252,12 +272,15 @@ defmodule EndPointBlank.Config do
   # It costs almost nothing in a configured host, because `||` short-circuits:
   # a setting that was configured explicitly never reaches `System.get_env/1`.
   defp resolve(config) do
+    client_id = config.client_id || System.get_env("ENDPOINTBLANK_CLIENT_ID")
+
     %{
       config
-      | client_id: config.client_id || System.get_env("ENDPOINTBLANK_CLIENT_ID"),
+      | client_id: client_id,
         client_secret: config.client_secret || System.get_env("ENDPOINTBLANK_CLIENT_SECRET"),
         base_url:
-          config.base_url || System.get_env("ENDPOINTBLANK_BASE_URL") || @default_base_url,
+          config.base_url || System.get_env("ENDPOINTBLANK_BASE_URL") ||
+            derived_base_url(config, client_id) || @default_base_url,
         log_base_url:
           config.log_base_url || System.get_env("ENDPOINTBLANK_LOG_BASE_URL") ||
             @default_log_base_url,
@@ -265,6 +288,47 @@ defmodule EndPointBlank.Config do
         environment: config.environment || System.get_env("ENDPOINTBLANK_ENV")
     }
   end
+
+  # sc-1463: a new `client_id` is `<organization slug>.<random>`, and that
+  # organization's intake answers at `https://<slug>.in.endpointblank.com`.
+  # Only while `derive_base_url_from_client_id` is on: `*.in.endpointblank.com`
+  # has no DNS or TLS in production yet, so it defaults off, and off means
+  # today's default for every `client_id`. Logs are not derived: whether they
+  # get a per-organization hostname is still open, so `log_base_url` keeps its
+  # own default.
+  defp derived_base_url(%{derive_base_url_from_client_id: true}, client_id) do
+    case client_id_slug(client_id) do
+      nil -> nil
+      slug -> "https://" <> slug <> @derived_base_url_suffix
+    end
+  end
+
+  defp derived_base_url(_config, _client_id), do: nil
+
+  @doc """
+  The organization slug a `client_id` names, or `nil` for one without it
+  (issued before sc-1463).
+
+  The same rule as app_portal's `Credentials.client_id_slug/1`, and the rule
+  all five SDKs will share: the part before the first `.` must have the exact shape of an
+  organization slug, and something must follow the dot. "Contains a `.`" is
+  not enough, because app_portal has always accepted a typed `client_id`, so a
+  legacy `my.client` can exist and must keep calling the default intake.
+  """
+  @spec client_id_slug(term()) :: String.t() | nil
+  def client_id_slug(client_id) when is_binary(client_id) do
+    with [slug, random] when random != "" <- String.split(client_id, ".", parts: 2),
+         # app_portal's `Organizations.Slug.valid?/1`: a domain label of up to
+         # 20 `[a-z0-9-]` characters that starts and ends alphanumeric, then
+         # `-` and 6 random characters. Copied, not loosened.
+         true <- Regex.match?(~r/\A[a-z0-9](?:[a-z0-9-]{0,18}[a-z0-9])?-[a-z0-9]{6}\z/, slug) do
+      slug
+    else
+      _ -> nil
+    end
+  end
+
+  def client_id_slug(_client_id), do: nil
 
   # Config readers
 

@@ -110,6 +110,7 @@ env var > built-in default**.
 | Authorization-cache TTL in seconds (`EndPointBlank.AuthCache`); `0` disables the cache. See [`:cache_ttl` values](#cache_ttl-values) | `:cache_ttl` | — (`configure/1` only) | `300` |
 | Whether the per-request `scheme`/`host`/`port` report honors `x-forwarded-proto`/`-host`/`-port` (see [Reported base URL](#reported-base-url)) | `:trust_proxy_headers` | — (`configure/1` only) | `true` |
 | Ordered list of masking rule maps (see [Data masking](#data-masking)) | `:masking_rules` | — (`configure/1` only) | `[]` |
+| Derive the intake hostname from a slug-prefixed `client_id` when no base URL is set (see [Intake hostname from `client_id`](#intake-hostname-from-client_id)) | `:derive_base_url_from_client_id` | — (`configure/1` only) | `false` |
 
 ### `:cache_ttl` values
 
@@ -184,6 +185,42 @@ would confidently report an internal hostname on an internal port. `host` is
 caller-controlled either way (`conn.host` comes from the `host` header), and
 none of these three values is ever used as an identity or authorization key, so
 the worst case is a wrong *suggestion* that an admin has to approve.
+
+### Intake hostname from `client_id`
+
+Each organization's intake will answer at its own hostname,
+`https://<slug>.in.endpointblank.com`, and every new `client_id` starts with
+that slug and a dot (`acima-x7k2mq.ijXI+MVwmrC5xH/9ZuGiQlAbAyobTqMa`). With
+`derive_base_url_from_client_id: true`, the SDK picks its intake in this
+order:
+
+1. `:base_url`, or else `ENDPOINTBLANK_BASE_URL`, if either is set;
+2. else, if the `client_id` carries a slug prefix,
+   `https://<slug>.in.endpointblank.com`;
+3. else `https://in.endpointblank.com`.
+
+A `client_id` carries a slug prefix only when the part before its first `.`
+has the exact shape of an organization slug and something follows the dot
+(`EndPointBlank.Config.client_id_slug/1`). A credential issued before slugs,
+including one with a `.` in it such as `my.client`, keeps calling
+`https://in.endpointblank.com`.
+
+**This is off by default, and turns on by default in a later release, once
+DNS and TLS for `*.in.endpointblank.com` are live.** Until then those
+hostnames do not resolve in production, so leave it off unless EndPointBlank
+has told you otherwise. With it off, the base URL is `:base_url`, else
+`ENDPOINTBLANK_BASE_URL`, else `https://in.endpointblank.com`, whatever the
+`client_id`.
+
+The logs hostname is not derived: `:log_base_url`, else
+`ENDPOINTBLANK_LOG_BASE_URL`, else `https://log.endpointblank.com`, as before.
+
+Every call to intake also sends `x-epb-sdk: elixir/<version>`, so
+EndPointBlank can tell which SDK versions use a credential before it moves an
+organization to another intake. The minimum Elixir version for a move is the
+release that turns `derive_base_url_from_client_id` on by default, **not**
+this one: with the option at its default here, the SDK keeps calling
+`https://in.endpointblank.com` after its organization has moved.
 
 ### 12-factor / env-var example
 

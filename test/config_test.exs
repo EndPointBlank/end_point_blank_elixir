@@ -507,4 +507,154 @@ defmodule EndPointBlank.ConfigTest do
       assert %Config{} = Config.get()
     end
   end
+
+  # sc-1463. *.in.endpointblank.com has no DNS or TLS in production yet, so
+  # derivation is off by default, and off must mean exactly today's answer.
+  describe "base_url derived from client_id (sc-1463)" do
+    @prefixed "acima-x7k2mq.ijXI+MVwmrC5xH/9ZuGiQlAbAyobTqMa"
+
+    test "is off by default" do
+      assert Config.get().derive_base_url_from_client_id == false
+    end
+
+    test "with derivation off, every client_id resolves to today's default" do
+      for client_id <- [@prefixed, "plain-client-id", "my.client", nil] do
+        Config.reset()
+        if client_id, do: Config.update(client_id: client_id)
+
+        assert Config.get().base_url == @default_base_url
+        assert Config.authorize_url() == @default_base_url <> "/api/authorize"
+        assert Config.access_token_url() == @default_base_url <> "/api/access_token"
+      end
+    end
+
+    test "with derivation off, a prefixed ENDPOINTBLANK_CLIENT_ID changes nothing" do
+      System.put_env("ENDPOINTBLANK_CLIENT_ID", @prefixed)
+      assert Config.get().base_url == @default_base_url
+    end
+
+    test "with derivation on, a slug-prefixed client_id calls its organization's intake" do
+      Config.update(derive_base_url_from_client_id: true, client_id: @prefixed)
+
+      assert Config.get().base_url == "https://acima-x7k2mq.in.endpointblank.com"
+
+      assert Config.authorize_url() ==
+               "https://acima-x7k2mq.in.endpointblank.com/api/authorize"
+
+      assert Config.access_token_url() ==
+               "https://acima-x7k2mq.in.endpointblank.com/api/access_token"
+
+      assert Config.endpoint_update_url() ==
+               "https://acima-x7k2mq.in.endpointblank.com/api/application_updates"
+    end
+
+    test "with derivation on, the client_id may come from ENDPOINTBLANK_CLIENT_ID" do
+      System.put_env("ENDPOINTBLANK_CLIENT_ID", @prefixed)
+      Config.update(derive_base_url_from_client_id: true)
+
+      assert Config.get().base_url == "https://acima-x7k2mq.in.endpointblank.com"
+    end
+
+    test "with derivation on, an explicit base_url still wins" do
+      Config.update(
+        derive_base_url_from_client_id: true,
+        client_id: @prefixed,
+        base_url: "https://explicit.example"
+      )
+
+      assert Config.get().base_url == "https://explicit.example"
+    end
+
+    test "with derivation on, ENDPOINTBLANK_BASE_URL still wins" do
+      System.put_env("ENDPOINTBLANK_BASE_URL", "https://env.example")
+      Config.update(derive_base_url_from_client_id: true, client_id: @prefixed)
+
+      assert Config.get().base_url == "https://env.example"
+    end
+
+    test "with derivation on, a client_id without a slug prefix calls the default intake" do
+      # "my.client" has a dot but no slug before it: the portal has always
+      # accepted a typed client_id, so a legacy id like this can exist.
+      for client_id <- [
+            "plain-client-id",
+            "ijXI+MVwmrC5xH/9ZuGiQlAbAyobTqMa",
+            "my.client",
+            "acima-x7k2mq.",
+            ".acima-x7k2mq",
+            "Acima-x7k2mq.abc",
+            "acima-x7k2m.abc",
+            "acima-x7k2mqq.abc",
+            "-acima-x7k2mq.abc",
+            "acima--x7k2mq.abc"
+          ] do
+        Config.reset()
+        Config.update(derive_base_url_from_client_id: true, client_id: client_id)
+
+        assert Config.get().base_url == @default_base_url,
+               "expected #{inspect(client_id)} to call the default intake"
+      end
+    end
+
+    test "with derivation on and no client_id, calls the default intake" do
+      Config.update(derive_base_url_from_client_id: true)
+      assert Config.get().base_url == @default_base_url
+    end
+
+    test "never derives the logs hostname" do
+      Config.update(derive_base_url_from_client_id: true, client_id: @prefixed)
+
+      assert Config.get().log_base_url == @default_log_base_url
+      assert Config.logs_url() == @default_log_base_url <> "/api/application_logs"
+    end
+
+    test "refuses a value that is not a boolean, applying nothing" do
+      for invalid <- ["true", 1, nil, :yes] do
+        assert_raise ArgumentError, ~r/derive_base_url_from_client_id/, fn ->
+          Config.update(client_id: @prefixed, derive_base_url_from_client_id: invalid)
+        end
+
+        assert Config.get().client_id == nil
+        assert Config.get().derive_base_url_from_client_id == false
+      end
+    end
+  end
+
+  describe "client_id_slug/1 (sc-1463)" do
+    test "answers the slug of a prefixed client_id" do
+      assert Config.client_id_slug("acima-x7k2mq.ijXI+MVwmrC5xH/9ZuGiQlAbAyobTqMa") ==
+               "acima-x7k2mq"
+
+      # The longest label app_portal makes: 20 characters, then the random part.
+      assert Config.client_id_slug("abcdefghij0123456789-x7k2mq.r") ==
+               "abcdefghij0123456789-x7k2mq"
+
+      # The fallback label for an organization with no usable name.
+      assert Config.client_id_slug("org-x7k2mq.r") == "org-x7k2mq"
+    end
+
+    test "splits on the first dot only" do
+      assert Config.client_id_slug("acima-x7k2mq.a.b") == "acima-x7k2mq"
+    end
+
+    test "answers nil for anything else" do
+      for value <- [
+            nil,
+            "",
+            "no-dot",
+            "my.client",
+            "acima-x7k2mq.",
+            "abcdefghij01234567890-x7k2mq.r",
+            "acima-x7k2mq-.r",
+            "acima_x7k2mq.r",
+            # Nothing outside [a-z0-9-] may reach the derived hostname.
+            "acima-x7k2mq\n.r",
+            "evil.com@acima-x7k2mq.r",
+            "a:1-x7k2mq.r",
+            "ACIMA-X7K2MQ.r",
+            123
+          ] do
+        assert Config.client_id_slug(value) == nil, "expected nil for #{inspect(value)}"
+      end
+    end
+  end
 end
