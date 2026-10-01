@@ -109,16 +109,20 @@ defmodule EndPointBlank.Commands.EndpointUpdateTest do
       assert log =~ "422"
     end
 
-    test "returns :error rather than crashing boot when a credential is missing" do
-      # This runs from the host application's start/2. A missing client_secret
-      # is refused before any request on the outbound token path (sc-1469);
-      # here it must still only log, never stop the host from booting.
+    test "sends nothing, and returns :error rather than crashing boot, without credentials" do
+      # This runs from the host application's start/2. Building the header
+      # anyway sent `Basic Og==` (base64 of ":") to intake (sc-1469); now
+      # nothing is sent, and the refusal is logged, never raised.
       stub(fn conn -> conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{}) end)
-      Config.update(client_secret: "")
+      Config.update(client_id: "", client_secret: "")
 
       log = capture_log(fn -> assert EndpointUpdate.update(@endpoints) == :error end)
 
-      assert log =~ "Endpoint update failed"
+      assert log =~
+               "Endpoint update not sent: " <>
+                 "EndPointBlank is missing client_id and client_secret: "
+
+      refute_received {:update, _path, _body, _auth}
     end
 
     test "returns :error rather than crashing boot when intake is unreachable" do

@@ -56,6 +56,37 @@ defmodule EndPointBlank.AuthorizationTest do
     end
   end
 
+  describe "intake_header/0 and intake_header!/0 (sc-1469)" do
+    test "is the well-formed Basic header when both credentials are set" do
+      assert Authorization.intake_header() == {:ok, "Basic " <> Base.encode64("cid:csecret")}
+      assert Authorization.intake_header!() == "Basic " <> Base.encode64("cid:csecret")
+      assert Authorization.missing_credentials() == []
+    end
+
+    test "refuses, rather than answering Basic Og==, when either is nil or empty" do
+      for {missing, keys} <- [
+            {[client_id: ""], [:client_id]},
+            {[client_secret: ""], [:client_secret]},
+            {[client_id: "", client_secret: ""], [:client_id, :client_secret]}
+          ] do
+        Config.update(client_id: "cid", client_secret: "csecret")
+        Config.update(missing)
+
+        assert Authorization.intake_header() == {:error, :missing_credentials}
+        assert Authorization.missing_credentials() == keys
+
+        error =
+          assert_raise EndPointBlank.ConfigurationError, fn -> Authorization.intake_header!() end
+
+        assert error.missing == keys
+        refute error.message =~ "cid"
+      end
+
+      assert Authorization.missing_credentials_message() =~
+               "EndPointBlank is missing client_id and client_secret: "
+    end
+  end
+
   describe "basic_header/0" do
     test "is a well-formed HTTP Basic header" do
       assert Authorization.basic_header() == "Basic " <> Base.encode64("cid:csecret")
@@ -158,7 +189,11 @@ defmodule EndPointBlank.AuthorizationTest do
       # reported as "re-issue the credential" for what is a missing setting.
       stub_intake_and_provider(fn conn -> respond(conn, 401) end)
 
-      for missing <- [[client_id: ""], [client_secret: ""], [client_id: "", client_secret: ""]] do
+      for {missing, names} <- [
+            {[client_id: ""], "client_id"},
+            {[client_secret: ""], "client_secret"},
+            {[client_id: "", client_secret: ""], "client_id and client_secret"}
+          ] do
         Config.update(client_id: "cid", client_secret: "csecret")
         Config.update(missing)
 
@@ -167,7 +202,7 @@ defmodule EndPointBlank.AuthorizationTest do
             assert Authorization.header(base_url) == {:error, :missing_credentials}
           end)
 
-        assert log =~ "client_id or client_secret is not configured"
+        assert log =~ "Access token not requested: EndPointBlank is missing #{names}: "
       end
 
       refute_received {:intake, _path, _auth}
@@ -326,7 +361,13 @@ defmodule EndPointBlank.AuthorizationTest do
           assert_raise EndPointBlank.ConfigurationError, fn -> Authorization.header!(base_url) end
         end)
 
-      assert error.message =~ "missing client_id or client_secret"
+      assert error.missing == [:client_secret]
+
+      assert error.message ==
+               "EndPointBlank is missing client_secret: set it with EndPointBlank.configure/1 " <>
+                 "or ENDPOINTBLANK_CLIENT_ID / ENDPOINTBLANK_CLIENT_SECRET. The SDK cannot " <>
+                 "authenticate to its intake without both."
+
       refute error.message =~ "re-issue"
       refute_received {:intake, _path, _auth}
       refute_received {:provider, _auth}

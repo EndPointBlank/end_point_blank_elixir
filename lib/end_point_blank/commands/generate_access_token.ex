@@ -95,24 +95,22 @@ defmodule EndPointBlank.Commands.GenerateAccessToken do
   end
 
   defp request(base_url, config) do
-    if blank?(config.client_id) or blank?(config.client_secret) do
-      Logger.error(
-        "[EndPointBlank] Access token not requested: client_id or client_secret is not " <>
-          "configured. Set both with EndPointBlank.configure/1 or ENDPOINTBLANK_CLIENT_ID / " <>
-          "ENDPOINTBLANK_CLIENT_SECRET."
-      )
+    case Authorization.intake_header() do
+      {:ok, auth} ->
+        send_request(base_url, config, auth)
 
-      {:error, :missing_credentials}
-    else
-      send_request(base_url, config)
+      {:error, :missing_credentials} ->
+        Logger.error(
+          "[EndPointBlank] Access token not requested: " <>
+            Authorization.missing_credentials_message()
+        )
+
+        {:error, :missing_credentials}
     end
   end
 
-  defp blank?(value), do: value in [nil, ""]
-
-  defp send_request(base_url, config) do
+  defp send_request(base_url, config, auth) do
     body = %{base_url: base_url, token_ttl: config.token_ttl}
-    auth = Authorization.basic_header()
 
     case Http.post(Config.access_token_url(), body, auth) do
       {:ok, %Req.Response{status: s, body: body}} when s in 200..299 ->

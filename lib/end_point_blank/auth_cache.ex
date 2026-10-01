@@ -54,7 +54,7 @@ defmodule EndPointBlank.AuthCache do
   `EndPointBlank.Plug.Authorized`), so concretely it takes an **authorize
   call** — or a direct call to `get/1`/`put/2` — landing on a given node
   while that node is disabled to flush that node's table. A host that only
-  ever calls `EndPointBlank.Authorization.basic_header/0` or otherwise
+  ever calls `EndPointBlank.Authorization.intake_header/0` or otherwise
   authenticates without going through the authorize plug never reaches
   `AuthCache` at all, disabled or not, and toggling `cache_ttl` around such
   a call flushes nothing. Likewise, on any one node,

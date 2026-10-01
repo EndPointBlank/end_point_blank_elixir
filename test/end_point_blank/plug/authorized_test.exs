@@ -187,17 +187,25 @@ defmodule EndPointBlank.Plug.AuthorizedTest do
   end
 
   describe "when a credential is missing" do
-    test "halts the request rather than raising into the host's pipeline", ctx do
-      # A missing client_secret is refused before any request on the outbound
-      # token path (sc-1469). The plug's own call to intake must still only
-      # refuse the request, never raise out of the host's pipeline.
+    test "fails closed without asking intake, rather than raising into the host's pipeline",
+         ctx do
+      # Building the header anyway sent `Basic Og==` (base64 of ":") to intake
+      # (sc-1469). Now nothing is sent and the request is refused as if intake
+      # were unavailable: failing open would disable authorization.
       stub(fn conn -> conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{}) end)
-      Config.update(client_secret: "")
+      Config.update(client_id: "", client_secret: "")
 
-      conn = capture_log_result(fn -> call(ctx) end)
+      parent = self()
 
+      log = capture_log(fn -> send(parent, {:result, call(ctx)}) end)
+
+      assert_receive {:result, conn}
       assert conn.halted
-      assert conn.status >= 400
+      assert conn.status == 503
+      assert log =~
+               "Authorization not requested: " <>
+                 "EndPointBlank is missing client_id and client_secret: "
+      refute_received {:authorize, _body}
     end
   end
 

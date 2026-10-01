@@ -234,10 +234,12 @@ Under the hood it:
   (falls back to `conn.request_path` if no Phoenix router is present) and the
   API version via `EndPointBlank.VersionFinder`.
 - Authenticates to intake with `Authorization: Basic <client_id:client_secret>`
-  (`EndPointBlank.Authorization.basic_header/0`). This call never presents a
+  (`EndPointBlank.Authorization.intake_header/0`). This call never presents a
   Bearer token — intake already holds this service's credential, so minting
   one to present it back would be a hop that buys nothing, and with no Bearer
-  there is nothing that can go stale for a `401` to retry.
+  there is nothing that can go stale for a `401` to retry. Without both
+  `client_id` and `client_secret` nothing is sent: the plug logs why and
+  answers 503, failing closed.
 - Caches successful authorizations for up to `:cache_ttl` seconds
   (`EndPointBlank.AuthCache`), keyed on the caller's own auth header, path,
   HTTP method, `app_name`, and API version — repeat calls skip the network
@@ -326,9 +328,11 @@ If `client_id` or `client_secret` is not configured (nil or empty), nothing
 is sent: `header/1` answers `{:error, :missing_credentials}` and `header!/1`
 raises `EndPointBlank.ConfigurationError`. Before, the token request went out
 with an empty credential, intake answered 401, and the error said to re-issue
-a credential that had simply never been set. Only `header/1` and `header!/1`
-refuse this way: the plugs, the endpoint update at boot and the writers go on
-returning or logging a failure, never raising into your application.
+a credential that had simply never been set. The SDK's own calls to intake
+refuse the same way, without sending anything: the authorize plug answers 503,
+and the endpoint update at boot and the writers log "EndPointBlank is missing
+client_id and client_secret: ..." and return. None of them raises into your
+application; only `header!/1` (and `Authorization.intake_header!/0`) raise.
 
 **Your `client_id`/`client_secret` is never sent to a provider.** When a token
 cannot be minted — intake is down or times out, answers 5xx, or rejects the
@@ -363,8 +367,9 @@ keyed on the canonical base URL intake resolves the request to — not on the
 URL you passed — so a service that calls several targets holds a token for
 each. Every call this SDK makes to its *own* intake (authorize, token minting,
 endpoint updates and the writers) uses
-`EndPointBlank.Authorization.basic_header/0` instead; intake already holds the
-credential. Never use `basic_header/0` for a call to a provider.
+`EndPointBlank.Authorization.intake_header/0` instead, which answers
+`{:ok, "Basic ..."}` or `{:error, :missing_credentials}`; intake already holds
+the credential. Never use it, or `basic_header/0`, for a call to a provider.
 
 #### Finding out why a token could not be minted
 

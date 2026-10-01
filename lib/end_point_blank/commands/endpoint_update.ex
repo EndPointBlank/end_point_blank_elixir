@@ -8,10 +8,30 @@ defmodule EndPointBlank.Commands.EndpointUpdate do
   require Logger
   alias EndPointBlank.{Config, Authorization, Http}
 
-  @doc "Sends the endpoint list to the EndPointBlank API."
+  @doc """
+  Sends the endpoint list to the EndPointBlank API.
+
+  Returns `:ok`, or `:error` after logging why. Never raises: this runs from
+  the host application's start. When `client_id` or `client_secret` is not
+  configured nothing is sent (sc-1469).
+  """
   def update(endpoints) when is_list(endpoints) do
+    case Authorization.intake_header() do
+      {:ok, auth} ->
+        send_update(endpoints, auth)
+
+      {:error, :missing_credentials} ->
+        Logger.error(
+          "[EndPointBlank] Endpoint update not sent: " <>
+            Authorization.missing_credentials_message()
+        )
+
+        :error
+    end
+  end
+
+  defp send_update(endpoints, auth) do
     config = Config.get()
-    auth = Authorization.basic_header()
 
     body = %{
       application: config.app_name,

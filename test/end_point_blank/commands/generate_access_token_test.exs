@@ -142,7 +142,7 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
                    {:error, :missing_credentials}
         end)
 
-      assert log =~ "client_id or client_secret is not configured"
+      assert log =~ "Access token not requested: EndPointBlank is missing "
     end
 
     refute_received {:token_request, _path, _body, _auth}

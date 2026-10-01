@@ -83,9 +83,17 @@
     65535, is refused with `:invalid_base_url`, whose message now reads "the
     URL is not an absolute http or https URL with a host and a port from 1
     to 65535, so no token was requested".
-  - The plugs, the endpoint update at boot, the writers and the
-    `AccessTokens` GenServer still never raise for a missing credential or
-    an unexpected mint failure: they return or log, as before.
+  - Every call to the SDK's own intake refuses a missing credential too,
+    through the new `Authorization.intake_header/0` (`{:ok, "Basic ..."}` or
+    `{:error, :missing_credentials}`) and `intake_header!/0`. They used to
+    send `Basic Og==` (base64 of `":"`). Now nothing is sent: the authorize
+    plug answers 503 (`EndpointAuthorize.authorize/3` returns
+    `{:error, :missing_credentials}`), and `EndpointUpdate.update/1` and the
+    writers log `ConfigurationError`'s message ("EndPointBlank is missing
+    client_id and client_secret: ...") and return `:error`. None of them, nor
+    the `AccessTokens` GenServer, raises for it. `ConfigurationError` gains
+    `:missing`, naming what is missing, and `Authorization.missing_credentials/0`
+    reports the same list.
   - The HTTP retry, access-token, authorize, endpoint-update and
     direct-writer error log lines no longer `inspect` the transport error;
     they name its atom reason or exception module only. A mint that raised logs the exception's module, not its
@@ -104,9 +112,10 @@
 ### Unchanged
 
 - Calls to this SDK's own intake — authorize, token minting, endpoint updates
-  and the request/response/log/error writers — still authenticate with Basic
-  via `Authorization.basic_header/0`. The writers used `header/0` for this and
-  now call `basic_header/0` directly.
+  and the request/response/log/error writers — still authenticate with Basic,
+  now via `Authorization.intake_header/0`, which refuses when a credential is
+  missing (above). The writers used `header/0` for this. `basic_header/0`
+  is still public but no longer used by the SDK.
 
 ## 0.8.0
 
