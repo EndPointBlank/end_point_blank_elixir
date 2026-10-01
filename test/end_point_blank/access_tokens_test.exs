@@ -455,6 +455,34 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.token(base) == "token-1"
     end
 
+    # sc-1463 conformance: a 503 or a 429 is an answer about this moment, not
+    # about the credential, so nothing may hold on to it -- the very next call
+    # asks intake again, and succeeds once intake does.
+    for status <- [503, 429] do
+      test "does not cache a #{status}: the next call mints again", %{base_url: base} do
+        status = unquote(status)
+
+        test_pid = self()
+
+        Req.Test.stub(__MODULE__.Stub, fn conn ->
+          send(test_pid, {:minted, :refused})
+          conn |> Plug.Conn.put_status(status) |> Req.Test.json(%{"error" => "busy"})
+        end)
+
+        capture_log(fn ->
+          assert AccessTokens.token(base) == nil
+          assert AccessTokens.token(base) == nil
+        end)
+
+        assert mint_count() == 2
+        refute AccessTokens.exists?(base)
+
+        stub_minting()
+        assert AccessTokens.token(base) == "token-1"
+        assert AccessTokens.last_failure(base) == nil
+      end
+    end
+
     test "a live token is served without minting, so a failed deeper mint cannot disturb it", %{
       base_url: base
     } do

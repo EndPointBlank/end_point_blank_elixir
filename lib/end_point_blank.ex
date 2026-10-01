@@ -61,6 +61,10 @@ defmodule EndPointBlank do
       `nil`, a negative number, a float or a string raises `ArgumentError` here, at configure
       time, rather than being reinterpreted when the cache is first used
     * `:trust_proxy_headers` - Whether the per-request `scheme`/`host`/`port` report honors `x-forwarded-*` headers (default `true`)
+    * `:derive_base_url_from_client_id` - When no `:base_url` or `ENDPOINTBLANK_BASE_URL` is
+      set, call `https://<slug>.in.endpointblank.com` for a slug-prefixed `client_id`
+      (default `false`; see the README's "Intake hostname from `client_id`"). Must be a
+      boolean
 
   ## Example
 

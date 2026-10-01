@@ -35,9 +35,30 @@ defmodule EndPointBlank.Http do
     ]
   end
 
+  @doc """
+  The `x-epb-sdk` value sent on every call to intake: `elixir/<version>`, the
+  version of this library as loaded (sc-1463). intake ignores it today; it is
+  there so intake can record the oldest version seen per credential, and so
+  tell whether every SDK using a credential is new enough to follow its
+  organization to another intake.
+  """
+  def sdk_header do
+    "elixir/" <> sdk_version()
+  end
+
+  # Read from the loaded application spec rather than baked in at compile
+  # time, so it is the version actually running. "unknown" only if the
+  # application is not loaded, which no call path here allows in practice.
+  defp sdk_version do
+    case Application.spec(:end_point_blank_elixir, :vsn) do
+      nil -> "unknown"
+      vsn -> List.to_string(vsn)
+    end
+  end
+
   defp do_post(url, body, auth_header, attempt) do
     opts =
-      [json: body, headers: [{"authorization", auth_header}]] ++
+      [json: body, headers: [{"authorization", auth_header}, {"x-epb-sdk", sdk_header()}]] ++
         req_options() ++ test_plug_opts()
 
     case Req.post(url, opts) do

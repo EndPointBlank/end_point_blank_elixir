@@ -73,4 +73,27 @@ defmodule EndPointBlank.HttpTest do
                Http.post("https://example.test/x", %{a: 1}, "Basic abc")
     end
   end
+
+  # sc-1463: intake will record the oldest SDK version seen per credential,
+  # which gates moving an organization to another intake.
+  describe "x-epb-sdk" do
+    test "names this SDK and its version" do
+      assert Http.sdk_header() == "elixir/" <> Mix.Project.config()[:version]
+    end
+
+    test "is sent on every post, alongside the authorization header" do
+      test_pid = self()
+
+      Application.put_env(:end_point_blank_elixir, :req_test_plug, fn conn ->
+        send(test_pid, {:headers, conn.req_headers})
+        Req.Test.json(conn, %{})
+      end)
+
+      assert {:ok, _} = Http.post("https://example.test/x", %{a: 1}, "Basic abc")
+
+      assert_received {:headers, headers}
+      assert {"x-epb-sdk", "elixir/" <> Mix.Project.config()[:version]} in headers
+      assert {"authorization", "Basic abc"} in headers
+    end
+  end
 end
