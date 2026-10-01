@@ -10,9 +10,10 @@ defmodule EndPointBlankElixir.MixProject do
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
       description:
-        "EndPointBlank Elixir client library: authorization plus request/response/error/log " <>
-          "ingestion (with masking, batching, timeouts, and a bounded queue) — also used for " <>
-          "self-monitoring.",
+        "Elixir and Phoenix SDK for EndPointBlank: authorize service-to-service API calls, " <>
+          "report endpoint versions, and see which clients still call deprecated API versions.",
+      homepage_url: "https://endpointblank.com",
+      source_url: "https://github.com/EndPointBlank/end_point_blank_elixir",
       package: package(),
       deps: deps()
     ]
@@ -30,7 +31,12 @@ defmodule EndPointBlankElixir.MixProject do
       # is required for the build.
       licenses: ["LicenseRef-Proprietary"],
       files: ~w(lib mix.exs README.md LICENSE),
-      links: %{"Source" => "https://github.com/EndPointBlank/end_point_blank_elixir"}
+      links: %{
+        "Homepage" => "https://endpointblank.com",
+        "Documentation" => "https://endpointblank.com/docs/sdk-setup",
+        "Source" => "https://github.com/EndPointBlank/end_point_blank_elixir",
+        "Issues" => "https://github.com/EndPointBlank/end_point_blank_elixir/issues"
+      }
     ]
   end
 

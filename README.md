@@ -1,6 +1,6 @@
 # EndPointBlank (Elixir)
 
-EndPointBlank client for Elixir / Phoenix apps — endpoint tracking and authorization, request/response/error/log reporting, and client-side data masking, all reporting back to the EndPointBlank API.
+Elixir and Phoenix SDK for [EndPointBlank](https://endpointblank.com): authorize service-to-service API calls, report endpoint versions, and see which clients still call deprecated API versions. It covers endpoint tracking and authorization, request/response/error/log reporting, and client-side data masking, all reporting back to the EndPointBlank API.
 
 ## Installation
 
