@@ -25,8 +25,10 @@ defmodule EndPointBlank.AccessTokens do
 
   ## Why a mint failed
 
-  `token/1` answers `nil` for every failure, because its callers fall back to
-  Basic and have nothing else to do with the detail. But the detail matters:
+  `token/1` answers `nil` for every failure; `token_result/1` answers
+  `{:error, reason}` with the reason for that very mint, and is what
+  `EndPointBlank.Authorization.header/1` uses to refuse an outbound call with a
+  message that says why. The detail matters:
   intake answers 401 for a credential it has rejected, and that is permanent
   until a human re-issues the credential, where a 5xx or a refused connection
   will likely be gone on the next call. `last_failure/1` reports the last one
@@ -40,6 +42,7 @@ defmodule EndPointBlank.AccessTokens do
   require Logger
 
   alias EndPointBlank.Commands.GenerateAccessToken
+  alias EndPointBlank.OutboundUrl
 
   @refresh_buffer_seconds 120
   @min_ttl_seconds 30
@@ -80,24 +83,65 @@ defmodule EndPointBlank.AccessTokens do
   Returns a valid access token for `base_url`, minting one if no usable entry
   covers it.
 
-  `base_url` is the URL you are about to call, with any query string and
-  fragment removed. It is sent verbatim; intake normalizes it and matches it
-  against registered base URLs by longest path prefix.
+  `base_url` is the URL you are about to call. Its userinfo, query and
+  fragment are removed first (`EndPointBlank.OutboundUrl.strip/1`): they are
+  never sent to intake, logged, or used as a cache or failure key. The rest is
+  sent as written; intake normalizes it and matches it against registered
+  base URLs by longest path prefix. A URL that is not a non-empty string, or
+  does not parse, is refused without asking intake.
 
   Returns `nil` rather than raising if a token cannot be produced -- which
   includes a response that carried a token but no `base_url` (nothing to
-  cache it under) as well as the cache failing to answer in time -- so an
-  intake outage costs the caller a fall back to Basic rather than its request.
+  cache it under) as well as the cache failing to answer in time. A `nil`
+  means the call must not be made: there is no fallback credential for a
+  provider (sc-1469).
 
-  Use `last_failure/1` to find out which kind of failure a `nil` was.
+  Use `token_result/1` to get the reason for this mint along with it, or
+  `last_failure/1` to find out afterwards which kind of failure a `nil` was.
   """
+  @spec token(term()) :: String.t() | nil
   def token(base_url) do
-    call({:token, base_url}, nil)
+    case token_result(base_url) do
+      {:ok, token} -> token
+      {:error, _reason} -> nil
+    end
   end
 
-  @doc "Returns true if a token covering `base_url` is held and not about to expire."
+  @doc """
+  Like `token/1`, but says why no token could be produced.
+
+  Returns `{:ok, token}` or `{:error, reason}`, where `reason` is a
+  `t:failure/0` from this very mint -- not whatever `last_failure/1` holds by
+  the time the caller asks, which a concurrent caller's mint may already have
+  replaced or cleared -- or `:token_cache_unavailable` when this cache did not
+  answer at all (it was not running, or a mint against a hung intake outlasted
+  the #{@call_timeout_ms} ms the call allows). A `base_url` that is not a
+  non-empty string answers `{:error, :missing_base_url}`, and one that does
+  not parse `{:error, :invalid_base_url}`, without asking intake. Never
+  raises.
+  """
+  @spec token_result(term()) ::
+          {:ok, String.t()}
+          | {:error, failure() | :token_cache_unavailable | :missing_base_url | :invalid_base_url}
+  def token_result(base_url) when is_binary(base_url) and base_url != "" do
+    case OutboundUrl.strip(base_url) do
+      {:ok, stripped} -> call({:token, stripped}, {:error, :token_cache_unavailable})
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def token_result(_base_url), do: {:error, :missing_base_url}
+
+  @doc """
+  Returns true if a token covering `base_url` is held and not about to expire.
+
+  Userinfo, query and fragment are removed first, as for `token/1`.
+  """
   def exists?(base_url) do
-    call({:exists, base_url}, false)
+    case OutboundUrl.strip(base_url) do
+      {:ok, stripped} -> call({:exists, stripped}, false)
+      {:error, _reason} -> false
+    end
   end
 
   @doc """
@@ -105,8 +149,9 @@ defmodule EndPointBlank.AccessTokens do
   last one succeeded or none has been made.
 
   Pass the same URL you passed to `token/1`: the record is kept under the URL
-  the caller asked about, not under the canonical base URL intake resolved it
-  to, because on a failure there is no resolved base URL to key it under.
+  the caller asked about (with its userinfo, query and fragment removed), not
+  under the canonical base URL intake resolved it to, because on a failure
+  there is no resolved base URL to key it under.
 
   Only the #{@max_recorded_failures} most recently failed URLs are kept, so
   this answers `nil` for a URL whose failure has since been pushed out by
@@ -134,7 +179,10 @@ defmodule EndPointBlank.AccessTokens do
   """
   @spec last_failure(term()) :: failure() | nil
   def last_failure(base_url) do
-    call({:last_failure, base_url}, nil)
+    case OutboundUrl.strip(base_url) do
+      {:ok, stripped} -> call({:last_failure, stripped}, nil)
+      {:error, _reason} -> nil
+    end
   end
 
   defp call(message, on_failure) do
@@ -170,8 +218,8 @@ defmodule EndPointBlank.AccessTokens do
 
   @impl true
   def handle_call({:token, base_url}, _from, state) do
-    {token, new_state} = fetch_or_generate(base_url, state)
-    {:reply, token, new_state}
+    {result, new_state} = fetch_or_generate(base_url, state)
+    {:reply, result, new_state}
   end
 
   @impl true
@@ -217,7 +265,7 @@ defmodule EndPointBlank.AccessTokens do
     case match(base_url, state.tokens) do
       %{token: token, expires_at: expires_at} ->
         if not_near_expiry?(expires_at),
-          do: {token, state},
+          do: {{:ok, token}, state},
           else: generate_and_store(base_url, state)
 
       nil ->
@@ -257,7 +305,7 @@ defmodule EndPointBlank.AccessTokens do
         _ -> state.tokens
       end
 
-    {token,
+    {{:ok, token},
      %{
        state
        | tokens: Map.put(tokens, key, entry),
@@ -278,29 +326,29 @@ defmodule EndPointBlank.AccessTokens do
 
     log_failure(base_url, reason)
 
-    {nil, record_failure(%{state | tokens: tokens}, base_url, reason)}
+    {{:error, reason}, record_failure(%{state | tokens: tokens}, base_url, reason)}
   end
 
   # A 401 is not an outage. Logging it as one -- "Failed to generate access
   # token", which reads as intake being down -- is why nobody notices that a
-  # credential has been revoked until traffic has been falling back to Basic
-  # for a week. This line names the remedy instead.
+  # credential has been revoked until outbound calls have been failing for a
+  # week. This line names the remedy instead.
   defp log_failure(base_url, :credential_rejected) do
     Logger.error(
       "[EndPointBlank] Access token credential was rejected for #{inspect(base_url)}: intake " <>
         "answered 401. This will NOT recover on its own — the API credential must be re-issued " <>
-        "(check :client_id/:client_secret). Callers fall back to Basic until it is."
+        "(check :client_id/:client_secret). Outbound calls to providers are refused " <>
+        "until it is."
     )
   end
 
   defp log_failure(base_url, reason) do
-    # inspect/1, not string interpolation: base_url is whatever a caller
-    # passed to token/1 or exists?/1, and String.Chars has no
-    # implementation for a map, tuple, PID, function, reference, port, or a
-    # non-codepoint list. Interpolating it directly would raise
-    # Protocol.UndefinedError right here, on the ordinary-miss path this
-    # very branch exists to keep safe -- the crash would just move one line
-    # rather than close. inspect/1 accepts any term.
+    # base_url reaches here only as OutboundUrl.strip/1's output, so it
+    # carries no userinfo, query or fragment. Still inspect/1, not string
+    # interpolation: should anything ever hand this GenServer a map, tuple,
+    # PID or the like, String.Chars would raise Protocol.UndefinedError right
+    # here, on the ordinary-miss path this very branch exists to keep safe.
+    # inspect/1 accepts any term.
     Logger.error(
       "[EndPointBlank] Failed to generate access token for #{inspect(base_url)}: #{describe(reason)}"
     )
@@ -308,7 +356,23 @@ defmodule EndPointBlank.AccessTokens do
 
   defp describe({:request_rejected, status}), do: "intake rejected the request: status=#{status}"
   defp describe({:server_error, status}), do: "intake failed: status=#{status}"
-  defp describe({:transport_error, reason}), do: "could not reach intake: #{inspect(reason)}"
+
+  defp describe({:transport_error, reason}),
+    do: "could not reach intake: #{transport_text(reason)}"
+
+  # generate_result/1 also answers :invalid_base_url, which cannot happen here
+  # since every entry point strips first; a clause for it, and for anything
+  # else, keeps this log line from killing the GenServer if that changes.
+  defp describe(_other), do: "unexpected failure"
+
+  # Not inspect/1: a transport error term can carry request data, including
+  # the Authorization header this SDK sends intake. Only an atom reason is
+  # written out.
+  defp transport_text(%Req.TransportError{reason: reason}) when is_atom(reason),
+    do: Atom.to_string(reason)
+
+  defp transport_text(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp transport_text(_reason), do: "unexpected error"
 
   # Failures are keyed by the URL the caller asked about, because a failed mint
   # has no resolved base URL to key on -- and the set of URLs a caller can ask
@@ -364,8 +428,8 @@ defmodule EndPointBlank.AccessTokens do
   # An unreadable or absent expiry keeps the token for a default hour, which is
   # what the other four SDKs do. A guess, but a working one: treating the token
   # as unusable instead means a mint on every inbound request for as long as the
-  # intake misbehaves, and with nothing held every one of those requests falls
-  # back to Basic. There is no retry catching a token that dies sooner than the
+  # intake misbehaves, and with nothing held every one of those calls would be
+  # refused. There is no retry catching a token that dies sooner than the
   # guess -- invalidate/1 has no caller on this path -- so a bad guess means
   # 401s until the cache's own expiry-based refresh catches up.
   defp parse_expiry(value) when is_binary(value) do

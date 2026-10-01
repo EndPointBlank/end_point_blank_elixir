@@ -172,15 +172,18 @@ defmodule EndPointBlank.AccessTokensTest do
       assert mint_count() == 2
     end
 
-    test "a URL carrying a query string misses rather than guessing", %{base_url: base} do
-      # It should have been stripped before it got here; missing is the right
-      # answer when it was not.
+    test "userinfo, query and fragment are stripped before the lookup", %{base_url: base} do
+      # They are removed at the entry point (sc-1469), so the cache key, the
+      # failure key and the log line never see them -- and a URL that differs
+      # only in them is served the entry already held.
       stub_minting()
 
       AccessTokens.token(base <> "/orders")
 
-      assert AccessTokens.token(base <> "/orders?page=2") == "token-2"
-      assert mint_count() == 2
+      with_secrets = String.replace(base, "https://", "https://u:p@") <> "/orders?page=2#f"
+      assert AccessTokens.token(with_secrets) == "token-1"
+      assert AccessTokens.exists?(with_secrets)
+      assert mint_count() == 1
     end
 
     test "a trailing slash still matches", %{base_url: base} do
@@ -211,19 +214,33 @@ defmodule EndPointBlank.AccessTokensTest do
       assert mint_count() == 1
     end
 
-    test "asks for a token for the base_url it was called with, verbatim", %{base_url: base} do
+    test "asks for a token for the base_url it was called with, less its query",
+         %{base_url: base} do
       stub_minting()
       Config.update(token_ttl: 900)
-      messy = base <> "/Orders?ignored=1"
+      messy = base <> "/Orders/?ignored=1"
 
       AccessTokens.token(messy)
 
       assert_receive {:minted, body}
-      # No downcasing, trimming, or reduction to a hostname -- intake owns
-      # normalization, and altering the argument would change which
-      # environment the caller is asking for.
-      assert body["base_url"] == messy
+      # Only the query goes (intake refuses a base_url carrying one). No
+      # downcasing, trimming, or reduction to a hostname -- intake owns
+      # normalization, and altering the rest would change which environment
+      # the caller is asking for.
+      assert body["base_url"] == base <> "/Orders/"
       assert body["token_ttl"] == 900
+    end
+
+    test "refuses an unparseable URL without asking intake", %{base_url: base} do
+      stub_minting()
+
+      assert AccessTokens.token_result("not a url ?token=s3cret") == {:error, :invalid_base_url}
+      assert AccessTokens.token_result(base <> "?") == {:ok, "token-1"}
+      assert AccessTokens.token_result("/orders") == {:error, :invalid_base_url}
+      refute AccessTokens.exists?("/orders")
+      assert AccessTokens.last_failure("/orders") == nil
+
+      assert mint_count() == 1
     end
   end
 
@@ -528,30 +545,25 @@ defmodule EndPointBlank.AccessTokensTest do
       assert Process.alive?(pid)
 
       # A restart would also have thrown away the cache. Confirm the entry
-      # seeded above is still being served rather than re-minted.
+      # seeded above is still being served rather than re-minted. The nil call
+      # never reached intake: it is refused at the entry point (sc-1469).
       assert AccessTokens.token(base) == "token-1"
-      assert mint_count() == 2
+      assert mint_count() == 1
     end
 
     test "reaches the same outcome whether the cache is cold or warm", %{base_url: base} do
-      # Cold cache: the match loop body never runs, so nothing raises today --
-      # the call proceeds to mint with a nil base_url and takes the "carried a
-      # token but no base_url" failure as an ordinary miss.
+      # A nil base_url is refused at the entry point (sc-1469), before the
+      # GenServer or intake is asked anything, so cold and warm cannot differ.
       stub_minting()
 
-      cold_log = capture_log(fn -> assert AccessTokens.token(nil) == nil end)
-      assert cold_log =~ "carried a token but no base_url"
+      assert AccessTokens.token_result(nil) == {:error, :missing_base_url}
 
-      # Warm the cache with a real entry, then repeat with nil. The fix makes
-      # this take the exact same ordinary-miss path as the cold call above,
-      # rather than crashing the GenServer.
-      assert AccessTokens.token(base) == "token-2"
+      assert AccessTokens.token(base) == "token-1"
+      assert AccessTokens.token_result(nil) == {:error, :missing_base_url}
 
-      warm_log = capture_log(fn -> assert AccessTokens.token(nil) == nil end)
-      assert warm_log =~ "carried a token but no base_url"
-
-      # The real entry is undisturbed by either nil call.
-      assert AccessTokens.token(base) == "token-2"
+      # The real entry is undisturbed, and nil never reached intake.
+      assert AccessTokens.token(base) == "token-1"
+      assert mint_count() == 1
     end
 
     test "an empty string base_url does not crash the GenServer when the cache is warm",
@@ -589,11 +601,9 @@ defmodule EndPointBlank.AccessTokensTest do
       assert AccessTokens.token(base) == "token-1"
       pid = Process.whereis(AccessTokens)
 
-      # Not asserting the return value here: an atom argument survives the
-      # matcher (this test's point) but still goes out over the wire, where
-      # JSON encoding turns it into a string before it comes back around --
-      # what matters is that the process answering afterward is still the
-      # one that was answering before.
+      # Refused at the entry point since sc-1469; what matters here is that
+      # the process answering afterward is still the one that was answering
+      # before.
       capture_log(fn -> AccessTokens.token(:not_a_url) end)
 
       assert Process.whereis(AccessTokens) == pid
@@ -1008,6 +1018,48 @@ defmodule EndPointBlank.AccessTokensTest do
 
       assert Process.whereis(AccessTokens) == pid
       assert Process.alive?(pid)
+    end
+  end
+
+  describe "token_result/1" do
+    test "answers {:ok, token} and caches it like token/1", %{base_url: base} do
+      stub_minting()
+
+      assert AccessTokens.token_result(base) == {:ok, "token-1"}
+      assert AccessTokens.token(base) == "token-1"
+      assert_received {:minted, _}
+      refute_received {:minted, _}
+    end
+
+    test "answers the reason for this very mint", %{base_url: base} do
+      # Authorization.header/1 refuses an outbound call with this reason, so it
+      # has to be the one for the mint just made -- not whatever last_failure/1
+      # holds by the time a caller asks, which a concurrent mint can change.
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "nope"})
+      end)
+
+      capture_log(fn ->
+        assert AccessTokens.token_result(base) == {:error, :credential_rejected}
+      end)
+    end
+
+    test "logs a transport error without inspecting it", %{base_url: base} do
+      Req.Test.stub(__MODULE__.Stub, fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
+
+      log = capture_log(fn -> AccessTokens.token(base) end)
+
+      assert log =~ "Failed to generate access token for #{inspect(base)}: " <>
+                      "could not reach intake: econnrefused"
+    end
+
+    test "answers a transport error, not a token, when intake times out", %{base_url: base} do
+      Req.Test.stub(__MODULE__.Stub, fn conn -> Req.Test.transport_error(conn, :timeout) end)
+
+      capture_log(fn ->
+        assert {:error, {:transport_error, %Req.TransportError{reason: :timeout}}} =
+                 AccessTokens.token_result(base)
+      end)
     end
   end
 end

@@ -1,5 +1,84 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- **Outbound calls to a provider never fall back to HTTP Basic; the SDK
+  refuses instead (sc-1469).** `EndPointBlank.Authorization.header/1` used to
+  answer `"Basic base64(client_id:client_secret)"` whenever no access token
+  could be minted — an intake outage or timeout, a 5xx, a revoked credential
+  (401) — which sent this service's own credential to whichever provider it
+  was calling. A provider is not EndPointBlank and must never see it.
+  - `header/1` now returns `{:ok, "Bearer <token>"}` or `{:error, reason}`
+    instead of a bare string. `reason` is an
+    `EndPointBlank.AccessTokens.failure/0` (`:credential_rejected`,
+    `{:request_rejected, status}`, `{:server_error, status}`,
+    `{:transport_error, reason}`), `:token_cache_unavailable`,
+    `:invalid_token` (a defensive refusal should the token cache ever answer
+    without a usable token), `:missing_base_url`, or `:invalid_base_url`. On
+    an error, do not make the call.
+  - New `header!/1` returns the `"Bearer <token>"` string or raises the new
+    `EndPointBlank.TokenUnavailableError` (fields `:base_url`, `:reason`,
+    `:status`, `:message`). The message says the token could not be minted,
+    why, and that credentials are never sent to providers.
+    `TokenUnavailableError.message/2` builds the same text from a `header/1`
+    error.
+  - `TokenUnavailableError`'s `:status` is the HTTP status intake answered
+    the token request with, derived from the reason: `401` for
+    `:credential_rejected`, `status` for `{:request_rejected, status}` and
+    `{:server_error, status}`, and `nil` otherwise (a transport error, the
+    cache not answering, a missing URL). `TokenUnavailableError.status/1`
+    derives it from a `header/1` error.
+  - The message is built from fixed phrases, the same in every EndPointBlank
+    SDK, and never `inspect`s the reason or repeats intake's response body,
+    a transport error or an exception: a transport error can carry request
+    data. `:credential_rejected` reads "intake rejected this application's
+    client credential (HTTP 401); retrying cannot help -- re-issue the
+    credential"; `{:request_rejected, s}` "intake refused the token request
+    (HTTP s); check the URL and that a grant covers the target";
+    `{:server_error, s}` "intake failed to issue a token (HTTP s); this may be
+    transient"; a transport error "intake could not be reached (timeout,
+    connection refused or retries exhausted); this may be transient"; a mint
+    that raised or threw "the token request failed unexpectedly". The raw
+    term is kept on `:reason`.
+  - The URL's userinfo, query and fragment are removed before the token
+    request (new `EndPointBlank.OutboundUrl.strip/1`); they are never sent to
+    intake, logged, or kept on the error. intake refuses a `base_url`
+    carrying any of them with 422, so sending them both leaked them and
+    guaranteed the mint failed. `header/1`, `AccessTokens.token/1`,
+    `token_result/1`, `exists?/1`, `last_failure/1` and
+    `GenerateAccessToken.generate_result/1` all strip, so cache keys, failure
+    keys and log lines use the stripped form, and `TokenUnavailableError`'s
+    `:base_url` holds the stripped URL (`nil` when none parsed), never the
+    one passed in. A URL that does not parse or has no scheme or host is
+    refused with `{:error, :invalid_base_url}` without a request; a
+    non-string one passed to `AccessTokens.token_result/1` answers
+    `{:error, :missing_base_url}` without a request (it used to be sent to
+    intake).
+  - The access-token failure log line no longer `inspect`s a transport
+    error; it names only an atom reason such as `econnrefused`.
+  - `header/0` is gone; it always answered Basic, for writers and host
+    code alike. `header(nil)` and `header("")`, which also answered Basic,
+    now answer `{:error, :missing_base_url}`.
+  - Migrating: replace `auth = Authorization.header(url)` with
+    `{:ok, auth} = Authorization.header(url)` plus an error branch, or with
+    `auth = Authorization.header!(url)`. Do not rescue the error and send
+    `basic_header/0` yourself.
+
+### Added
+
+- `EndPointBlank.AccessTokens.token_result/1`: `{:ok, token}` or
+  `{:error, reason}` with the reason for that very mint. `token/1` still
+  answers the token or `nil`.
+
+### Unchanged
+
+- Calls to this SDK's own intake — authorize, token minting, endpoint updates
+  and the request/response/log/error writers — still authenticate with Basic
+  via `Authorization.basic_header/0`. The writers used `header/0` for this and
+  now call `basic_header/0` directly.
+
 ## 0.8.0
 
 ### Breaking

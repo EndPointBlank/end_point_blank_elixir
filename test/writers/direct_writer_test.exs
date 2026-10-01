@@ -80,13 +80,17 @@ defmodule EndPointBlank.Writers.DirectWriterTest do
     assert body == %{"payload" => [%{"a" => 1}, %{"b" => 2}]}
   end
 
-  test "authenticates with Basic credentials when no token is cached" do
+  test "authenticates to its own intake with Basic credentials, never a minted token" do
+    # sc-1469 removed Authorization.header/0, which this used to call. Writes go
+    # to this SDK's own intake, which already holds the credential, so Basic is
+    # right here -- and minting a token for it would be a wasted hop.
     stub()
 
     DirectWriter.write(:logs, [%{a: 1}])
 
-    assert_receive {:posted, _path, _body, auth}
+    assert_receive {:posted, "/api/application_logs", _body, auth}
     assert auth == "Basic " <> Base.encode64("cid:csecret")
+    refute_received {:posted, "/api/access_token", _body, _auth}
   end
 
   describe "outcomes" do
