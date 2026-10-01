@@ -80,13 +80,15 @@
   - `OutboundUrl.strip/1` also lowercases the scheme and host and drops an
     empty port (`https://api.test:/x`) along with a default one. A scheme
     other than `http` or `https`, or a port that is not a number from 1 to
-    65535, is refused with `:invalid_base_url`.
+    65535, is refused with `:invalid_base_url`, whose message now reads "the
+    URL is not an absolute http or https URL with a host and a port from 1
+    to 65535, so no token was requested".
   - The plugs, the endpoint update at boot, the writers and the
     `AccessTokens` GenServer still never raise for a missing credential or
     an unexpected mint failure: they return or log, as before.
-  - The HTTP retry log line and the access-token error log line no longer
-    `inspect` the transport error; they name its atom reason or exception
-    module only. A mint that raised logs the exception's module, not its
+  - The HTTP retry, access-token, authorize, endpoint-update and
+    direct-writer error log lines no longer `inspect` the transport error;
+    they name its atom reason or exception module only. A mint that raised logs the exception's module, not its
     message.
   - Migrating: replace `auth = Authorization.header(url)` with
     `{:ok, auth} = Authorization.header(url)` plus an error branch, or with

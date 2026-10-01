@@ -85,10 +85,12 @@ defmodule EndPointBlank.AccessTokens do
 
   `base_url` is the URL you are about to call. Its userinfo, query and
   fragment are removed first (`EndPointBlank.OutboundUrl.strip/1`): they are
-  never sent to intake, logged, or used as a cache or failure key. The rest is
-  sent as written; intake normalizes it and matches it against registered
+  never sent to intake, logged, or used as a cache or failure key. The scheme
+  and host are lowercased and a default or empty port is dropped; the path is
+  sent as written. intake normalizes it and matches it against registered
   base URLs by longest path prefix. A URL that is not a non-empty string, or
-  does not parse, is refused without asking intake.
+  that `OutboundUrl.strip/1` refuses (not an absolute `http` or `https` URL
+  with a host, or a port outside 1..65535), is refused without asking intake.
 
   Returns `nil` rather than raising if a token cannot be produced -- which
   includes a response that carried a token but no `base_url` (nothing to
@@ -116,8 +118,10 @@ defmodule EndPointBlank.AccessTokens do
   replaced or cleared -- or `:token_cache_unavailable` when this cache did not
   answer at all (it was not running, or a mint against a hung intake outlasted
   the #{@call_timeout_ms} ms the call allows). A `base_url` that is not a
-  non-empty string answers `{:error, :missing_base_url}`, and one that does
-  not parse `{:error, :invalid_base_url}`, without asking intake.
+  non-empty string answers `{:error, :missing_base_url}`, and one that
+  `OutboundUrl.strip/1` refuses (not an absolute `http` or `https` URL with a
+  host, or a port outside 1..65535) `{:error, :invalid_base_url}`, without
+  asking intake.
 
   Two more answers are not a mint intake failed, so neither is recorded for
   `last_failure/1` nor drops a held entry: `{:error, :missing_credentials}`

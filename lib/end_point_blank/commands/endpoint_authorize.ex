@@ -94,7 +94,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
             {:error, s, b}
 
           {:error, reason} ->
-            Logger.error("[EndPointBlank] Authorization error: #{inspect(reason)}")
+            Logger.error("[EndPointBlank] Authorization error: #{Http.describe_error(reason)}")
             {:error, :service_unavailable}
         end
     end

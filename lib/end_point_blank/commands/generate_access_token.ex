@@ -54,8 +54,9 @@ defmodule EndPointBlank.Commands.GenerateAccessToken do
   @doc """
   Requests a new access token for `base_url`, reporting why a failure failed.
 
-  `base_url` has its userinfo, query and fragment removed
-  (`EndPointBlank.OutboundUrl.strip/1`) and the rest is sent as written,
+  `base_url` has its userinfo, query and fragment removed, its scheme and
+  host lowercased and a default or empty port dropped
+  (`EndPointBlank.OutboundUrl.strip/1`); the path is sent as written,
   unconditionally alongside `token_ttl` (which goes over the wire as an
   explicit `null` when unconfigured — intake handles that deliberately).
   intake normalizes `base_url` and matches it against registered base URLs by
@@ -67,8 +68,9 @@ defmodule EndPointBlank.Commands.GenerateAccessToken do
   `base_url`, plus whatever else intake sent (`expired_at`) -- or
   `{:error, reason}` where `reason` is a `t:failure/0`. See that type for
   which reasons are permanent and which are worth retrying. A `base_url` that
-  does not parse, or is not a string, answers `{:error, :invalid_base_url}`
-  without a request.
+  is not a string, or that `OutboundUrl.strip/1` refuses (not an absolute
+  `http` or `https` URL with a host, or a port outside 1..65535), answers
+  `{:error, :invalid_base_url}` without a request.
 
   Two answers are not intake's verdict and are not a `t:failure/0`:
 

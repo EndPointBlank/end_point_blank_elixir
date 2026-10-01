@@ -64,9 +64,10 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
   end
 
   test "sends the base_url with only its scheme and host lowercased" do
-    # Intake matches by longest path prefix, so the SDK leaves the port, the
-    # path's case and the trailing slash as given. Only the host is
-    # lowercased, as intake's BaseUrl.normalize does (sc-1469).
+    # Intake matches by longest path prefix, so the SDK leaves a non-default
+    # port, the path's case and the trailing slash as given. The scheme and
+    # host are lowercased, as intake's BaseUrl.normalize does, and a default
+    # or empty port would be dropped (sc-1469).
     messy = "https://API.Example.com:8443/Orders/"
     stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
 

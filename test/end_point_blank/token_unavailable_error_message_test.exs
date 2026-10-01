@@ -90,6 +90,29 @@ defmodule EndPointBlank.TokenUnavailableErrorMessageTest do
       end
     end
 
+    test "invalid_base_url" do
+      assert TokenUnavailableError.message(@url, :invalid_base_url) ==
+               @prefix <>
+                 "the URL is not an absolute http or https URL with a host and a port " <>
+                 "from 1 to 65535, so no token was requested" <> @suffix
+    end
+
+    test "an ftp:// URL, refused before any request (rails#43)" do
+      ftp = "ftp://files.test:21/x?token=s3cret"
+
+      assert EndPointBlank.Authorization.header(ftp) == {:error, :invalid_base_url}
+
+      error = TokenUnavailableError.exception(base_url: ftp, reason: :invalid_base_url)
+
+      assert error.base_url == nil
+
+      assert error.message ==
+               "Could not mint an EndPointBlank access token for the requested URL " <>
+                 "(not shown: it could not be parsed or is not http or https): " <>
+                 "the URL is not an absolute http or https URL with a host and a port " <>
+                 "from 1 to 65535, so no token was requested" <> @suffix
+    end
+
     test "no result recorded" do
       assert TokenUnavailableError.message(@url, nil) ==
                @prefix <> "the token request failed for an unknown reason" <> @suffix

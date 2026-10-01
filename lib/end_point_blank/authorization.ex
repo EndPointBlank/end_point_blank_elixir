@@ -35,8 +35,10 @@ defmodule EndPointBlank.Authorization do
 
     * `:missing_base_url` -- the URL passed was not a non-empty string, so
       there is nothing to mint a token for.
-    * `:invalid_base_url` -- the URL did not parse, or has no scheme or host.
-      Refused locally: nothing is sent to intake.
+    * `:invalid_base_url` -- the URL is not an absolute `http` or `https` URL
+      with a host and, if one is written, a port from 1 to 65535 (see
+      `EndPointBlank.OutboundUrl.strip/1`). Refused locally: nothing is sent
+      to intake.
     * `:token_cache_unavailable` -- `EndPointBlank.AccessTokens` did not
       answer: it was not running, or a mint against a hung intake outlasted
       the call.

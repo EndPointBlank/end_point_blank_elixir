@@ -26,7 +26,7 @@ defmodule EndPointBlank.Writers.DirectWriter do
         :error
 
       {:error, reason} ->
-        Logger.warning("[EndPointBlank] Write to #{url_key} error: #{inspect(reason)}")
+        Logger.warning("[EndPointBlank] Write to #{url_key} error: #{Http.describe_error(reason)}")
         :error
     end
   end

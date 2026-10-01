@@ -13,7 +13,7 @@ defmodule EndPointBlank.TokenUnavailableError do
 
     * `:base_url` -- the URL a token was requested for, stripped to scheme,
       host, port and path by `EndPointBlank.OutboundUrl.strip/1`, or `nil`
-      when there was no URL or it could not be parsed. Userinfo, query and
+      when there was no URL or `OutboundUrl.strip/1` refused it. Userinfo, query and
       fragment can carry a secret, and error reporters capture an exception's
       fields as well as its message, so they are not kept anywhere on the
       exception; the caller already has the URL it passed.
@@ -57,6 +57,8 @@ defmodule EndPointBlank.TokenUnavailableError do
                      "retries exhausted); this may be transient"
 
   @unexpected "the token request failed unexpectedly"
+
+  @refused_url "the requested URL (not shown: it could not be parsed or is not http or https)"
 
   defexception [:base_url, :reason, :status, :message, unexpected: false]
 
@@ -118,7 +120,7 @@ defmodule EndPointBlank.TokenUnavailableError do
   defp url_text(base_url) when is_binary(base_url) and base_url != "" do
     case OutboundUrl.strip(base_url) do
       {:ok, stripped} -> stripped
-      {:error, _} -> "the requested URL (not shown: it could not be parsed)"
+      {:error, _} -> @refused_url
     end
   end
 
@@ -129,7 +131,8 @@ defmodule EndPointBlank.TokenUnavailableError do
   end
 
   defp describe(:invalid_base_url) do
-    "the URL could not be parsed into a scheme and host, so no token was requested"
+    "the URL is not an absolute http or https URL with a host and a port from 1 to 65535, " <>
+      "so no token was requested"
   end
 
   defp describe(:token_cache_unavailable) do

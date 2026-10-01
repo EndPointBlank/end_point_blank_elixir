@@ -38,7 +38,7 @@ defmodule EndPointBlank.Commands.EndpointUpdate do
         :error
 
       {:error, reason} ->
-        Logger.error("[EndPointBlank] Endpoint update error: #{inspect(reason)}")
+        Logger.error("[EndPointBlank] Endpoint update error: #{Http.describe_error(reason)}")
         :error
     end
   end
