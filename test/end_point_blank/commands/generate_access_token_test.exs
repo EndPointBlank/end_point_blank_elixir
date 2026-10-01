@@ -63,18 +63,17 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
     assert body == %{"base_url" => "https://api.example.com/orders", "token_ttl" => 1_800}
   end
 
-  test "sends the base_url verbatim, with no normalization" do
-    # Intake owns normalization and matches by longest path prefix. The SDK
-    # altering the argument -- downcasing, trimming a trailing slash, or
-    # reducing it to a hostname -- would change which environment the caller
-    # asked for.
+  test "sends the base_url with only its scheme and host lowercased" do
+    # Intake matches by longest path prefix, so the SDK leaves the port, the
+    # path's case and the trailing slash as given. Only the host is
+    # lowercased, as intake's BaseUrl.normalize does (sc-1469).
     messy = "https://API.Example.com:8443/Orders/"
     stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
 
     GenerateAccessToken.generate(messy)
 
     assert_receive {:token_request, _path, body, _auth}
-    assert body["base_url"] == messy
+    assert body["base_url"] == "https://api.example.com:8443/Orders/"
   end
 
   test "never sends intake the URL's userinfo, query or fragment" do
