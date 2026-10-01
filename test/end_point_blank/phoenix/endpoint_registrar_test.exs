@@ -55,7 +55,13 @@ defmodule EndPointBlank.Phoenix.EndpointRegistrarTest do
 
   setup do
     Application.put_env(:end_point_blank_elixir, :req_test_plug, {Req.Test, __MODULE__.Stub})
-    Config.update(app_name: "test-app", base_url: "https://intake.test")
+    # intake_header/0 sends nothing without both credentials (sc-1469).
+    Config.update(
+      app_name: "test-app",
+      base_url: "https://intake.test",
+      client_id: "cid",
+      client_secret: "csecret"
+    )
 
     test_pid = self()
 

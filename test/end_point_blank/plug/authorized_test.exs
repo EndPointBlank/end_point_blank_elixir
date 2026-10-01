@@ -186,6 +186,29 @@ defmodule EndPointBlank.Plug.AuthorizedTest do
     end
   end
 
+  describe "when a credential is missing" do
+    test "fails closed without asking intake, rather than raising into the host's pipeline",
+         ctx do
+      # Building the header anyway sent `Basic Og==` (base64 of ":") to intake
+      # (sc-1469). Now nothing is sent and the request is refused as if intake
+      # were unavailable: failing open would disable authorization.
+      stub(fn conn -> conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{}) end)
+      Config.update(client_id: "", client_secret: "")
+
+      parent = self()
+
+      log = capture_log(fn -> send(parent, {:result, call(ctx)}) end)
+
+      assert_receive {:result, conn}
+      assert conn.halted
+      assert conn.status == 503
+      assert log =~
+               "Authorization not requested: " <>
+                 "EndPointBlank is missing client_id and client_secret: "
+      refute_received {:authorize, _body}
+    end
+  end
+
   # Runs `fun` with its log suppressed and returns its value.
   defp capture_log_result(fun) do
     parent = self()

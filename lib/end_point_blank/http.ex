@@ -68,7 +68,7 @@ defmodule EndPointBlank.Http do
         {:ok, resp}
 
       {:error, reason} ->
-        Logger.warning("[EndPointBlank] HTTP POST to #{url} failed (attempt #{attempt}/#{@max_attempts}): #{inspect(reason)}")
+        Logger.warning("[EndPointBlank] HTTP POST to #{url} failed (attempt #{attempt}/#{@max_attempts}): #{describe_error(reason)}")
 
         if attempt < @max_attempts do
           Process.sleep(@retry_delay_ms)
@@ -78,6 +78,42 @@ defmodule EndPointBlank.Http do
         end
     end
   end
+
+  # The Req/Mint/Finch exceptions that mean the request never completed: no
+  # connection, a timeout, a broken HTTP exchange. Matched by module name so
+  # a transitive dependency's module need not be loaded to be named here.
+  @transport_exceptions [
+    Req.TransportError,
+    Req.HTTPError,
+    Mint.TransportError,
+    Mint.HTTPError,
+    Finch.Error
+  ]
+
+  @doc false
+  # True when `reason`, from `post/3`'s `{:error, reason}`, is intake being out
+  # of reach rather than a bug: a transport exception above, or a bare atom
+  # such as `:timeout` or `:econnrefused`. Anything else is not a transport
+  # error, and the token mint reports it as unexpected (sc-1469).
+  def transport_error?(%{__exception__: true, __struct__: module}),
+    do: module in @transport_exceptions
+
+  def transport_error?(reason) when is_atom(reason) and reason not in [nil, true, false],
+    do: true
+
+  def transport_error?(_reason), do: false
+
+  @doc false
+  # What a log line may say about `reason`: the atom reason a transport
+  # exception carries, or an exception's module name -- never `inspect/1` of
+  # the term, which can carry the request, Authorization header included.
+  def describe_error(%{__exception__: true, __struct__: module, reason: reason})
+      when is_atom(reason),
+      do: "#{inspect(module)} (#{reason})"
+
+  def describe_error(%{__exception__: true, __struct__: module}), do: inspect(module)
+  def describe_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+  def describe_error(_reason), do: "unexpected error"
 
   # Test-only seam: lets tests stub the transport via Req.Test without
   # touching the public post/3 contract. No-op unless explicitly configured.

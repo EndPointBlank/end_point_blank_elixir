@@ -77,6 +77,8 @@ defmodule EndPointBlank.Writers.DelayedWriterTest do
       # the DelayedWriter process (not the test process), so the stub must
       # be visible process-wide.
       Req.Test.set_req_test_to_shared()
+      # intake_header/0 sends nothing without both credentials (sc-1469).
+      Config.update(client_id: "cid", client_secret: "csecret")
 
       Application.put_env(
         :end_point_blank_elixir,
@@ -169,6 +171,8 @@ defmodule EndPointBlank.Writers.DelayedWriterTest do
       # the DelayedWriter process (not the test process), so the stub must
       # be visible process-wide.
       Req.Test.set_req_test_to_shared()
+      # intake_header/0 sends nothing without both credentials (sc-1469).
+      Config.update(client_id: "cid", client_secret: "csecret")
 
       Application.put_env(
         :end_point_blank_elixir,

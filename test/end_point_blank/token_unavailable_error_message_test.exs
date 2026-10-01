@@ -78,13 +78,39 @@ defmodule EndPointBlank.TokenUnavailableErrorMessageTest do
 
     test "the mint threw" do
       for reason <- [
-            {:transport_error, %RuntimeError{message: "exploded with s3cret"}},
-            {:transport_error, {:throw, "s3cret"}},
-            {:transport_error, {:exit, "s3cret"}}
+            {:unexpected, %RuntimeError{message: "exploded with s3cret"}},
+            {:unexpected, {:throw, "s3cret"}},
+            {:unexpected, {:exit, "s3cret"}},
+            {:unexpected, %ArgumentError{message: "s3cret"}},
+            # Not a transport failure, whatever it is tagged: still unexpected.
+            {:transport_error, %RuntimeError{message: "exploded with s3cret"}}
           ] do
         assert TokenUnavailableError.message(@url, reason) ==
                  @prefix <> "the token request failed unexpectedly" <> @suffix
       end
+    end
+
+    test "invalid_base_url" do
+      assert TokenUnavailableError.message(@url, :invalid_base_url) ==
+               @prefix <>
+                 "the URL is not an absolute http or https URL with a host and a port " <>
+                 "from 1 to 65535, so no token was requested" <> @suffix
+    end
+
+    test "an ftp:// URL, refused before any request (rails#43)" do
+      ftp = "ftp://files.test:21/x?token=s3cret"
+
+      assert EndPointBlank.Authorization.header(ftp) == {:error, :invalid_base_url}
+
+      error = TokenUnavailableError.exception(base_url: ftp, reason: :invalid_base_url)
+
+      assert error.base_url == nil
+
+      assert error.message ==
+               "Could not mint an EndPointBlank access token for the requested URL " <>
+                 "(not shown: it could not be parsed or is not http or https): " <>
+                 "the URL is not an absolute http or https URL with a host and a port " <>
+                 "from 1 to 65535, so no token was requested" <> @suffix
     end
 
     test "no result recorded" do

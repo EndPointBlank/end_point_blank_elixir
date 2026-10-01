@@ -819,32 +819,69 @@ defmodule EndPointBlank.AccessTokensTest do
       assert {:transport_error, _reason} = AccessTokens.last_failure(base)
     end
 
-    test "records a transient failure -- never :credential_rejected -- when minting raises",
+    test "answers {:unexpected, _} -- recording nothing -- when minting raises",
          %{base_url: base} do
       # `safe_generate/1`'s rescue exists so a misconfiguration cannot restart
-      # this GenServer. What it must not do is quietly become the permanent
-      # outcome: a raise says nothing at all about the credential, and calling
-      # it :credential_rejected would tell a caller to stop retrying a bug.
-      Req.Test.stub(__MODULE__.Stub, fn _conn -> raise "intake exploded" end)
+      # this GenServer. What it must not do is pass for intake's verdict: a
+      # raise says nothing about the credential (:credential_rejected would
+      # tell a caller to stop retrying a bug) nor about intake being reachable
+      # (:transport_error would send them to check the network) (sc-1469).
+      Req.Test.stub(__MODULE__.Stub, fn _conn -> raise "intake exploded with s3cret" end)
 
       pid = Process.whereis(AccessTokens)
-      capture_log(fn -> assert AccessTokens.token(base) == nil end)
 
-      assert {:transport_error, _reason} = AccessTokens.last_failure(base)
-      refute AccessTokens.last_failure(base) == :credential_rejected
+      log =
+        capture_log(fn ->
+          assert {:error, {:unexpected, _raised}} = AccessTokens.token_result(base)
+        end)
+
+      assert AccessTokens.last_failure(base) == nil
       assert Process.whereis(AccessTokens) == pid
       assert Process.alive?(pid)
+
+      # Only the exception's module is logged, never its message.
+      refute log =~ "s3cret"
     end
 
-    test "records a transient failure when minting throws", %{base_url: base} do
+    test "answers {:unexpected, {kind, term}} -- recording nothing -- when minting throws",
+         %{base_url: base} do
       # The catch clause, one step over from the rescue: same requirement.
       Req.Test.stub(__MODULE__.Stub, fn _conn -> throw(:boom) end)
 
       pid = Process.whereis(AccessTokens)
-      capture_log(fn -> assert AccessTokens.token(base) == nil end)
 
-      assert {:transport_error, _reason} = AccessTokens.last_failure(base)
+      capture_log(fn ->
+        assert AccessTokens.token_result(base) == {:error, {:unexpected, {:throw, :boom}}}
+      end)
+
+      assert AccessTokens.last_failure(base) == nil
       assert Process.whereis(AccessTokens) == pid
+    end
+
+    test "answers :missing_credentials without a request, recording nothing",
+         %{base_url: base} do
+      test_pid = self()
+
+      Req.Test.stub(__MODULE__.Stub, fn conn ->
+        send(test_pid, :intake_called)
+        conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{"error" => "nope"})
+      end)
+
+      Config.update(client_secret: "")
+      pid = Process.whereis(AccessTokens)
+
+      capture_log(fn ->
+        assert AccessTokens.token_result(base) == {:error, :missing_credentials}
+        assert AccessTokens.token(base) == nil
+        assert AccessTokens.exists?(base) == false
+      end)
+
+      refute_received :intake_called
+      assert AccessTokens.last_failure(base) == nil
+
+      # Answered, not raised: this GenServer is shared by every caller.
+      assert Process.whereis(AccessTokens) == pid
+      assert Process.alive?(pid)
     end
 
     test "records a 2xx it cannot cache as a server error, not a rejected credential",
