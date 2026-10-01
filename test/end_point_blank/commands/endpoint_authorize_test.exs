@@ -489,6 +489,24 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
       assert log =~ "Authorization failed"
     end
 
+    test "sends nothing when the credentials are missing", ctx do
+      # Building the header anyway sent `Basic Og==` (base64 of ":") to intake
+      # (sc-1469). The refusal is logged and returned, never raised.
+      stub_intake(%{@authorize_path => unreachable()})
+      Config.update(client_id: "", client_secret: "")
+
+      log =
+        capture_log(fn ->
+          assert EndpointAuthorize.authorize(conn(ctx)) == {:error, :missing_credentials}
+        end)
+
+      assert log =~
+               "Authorization not requested: " <>
+                 "EndPointBlank is missing client_id and client_secret: "
+
+      refute_received {:intake_call, _call}
+    end
+
     test "reports the service unavailable when the host cannot be reached", ctx do
       stub_intake(%{@authorize_path => unreachable()})
 

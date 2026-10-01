@@ -63,18 +63,18 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
     assert body == %{"base_url" => "https://api.example.com/orders", "token_ttl" => 1_800}
   end
 
-  test "sends the base_url verbatim, with no normalization" do
-    # Intake owns normalization and matches by longest path prefix. The SDK
-    # altering the argument -- downcasing, trimming a trailing slash, or
-    # reducing it to a hostname -- would change which environment the caller
-    # asked for.
+  test "sends the base_url with only its scheme and host lowercased" do
+    # Intake matches by longest path prefix, so the SDK leaves a non-default
+    # port, the path's case and the trailing slash as given. The scheme and
+    # host are lowercased, as intake's BaseUrl.normalize does, and a default
+    # or empty port would be dropped (sc-1469).
     messy = "https://API.Example.com:8443/Orders/"
     stub(fn conn -> conn |> Plug.Conn.put_status(201) |> Req.Test.json(%{"token" => "abc"}) end)
 
     GenerateAccessToken.generate(messy)
 
     assert_receive {:token_request, _path, body, _auth}
-    assert body["base_url"] == messy
+    assert body["base_url"] == "https://api.example.com:8443/Orders/"
   end
 
   test "never sends intake the URL's userinfo, query or fragment" do
@@ -125,6 +125,39 @@ defmodule EndPointBlank.Commands.GenerateAccessTokenTest do
 
     assert log =~ "GenerateAccessToken failed"
     assert log =~ "403"
+  end
+
+  test "sends nothing and answers :missing_credentials when a credential is missing" do
+    # Sending it anyway would go out as Basic of ":" and come back as a 401,
+    # which reads as a revoked credential (sc-1469).
+    stub(fn conn -> conn |> Plug.Conn.put_status(401) |> Req.Test.json(%{}) end)
+
+    for missing <- [[client_id: ""], [client_secret: ""]] do
+      Config.update(client_id: "cid", client_secret: "csecret")
+      Config.update(missing)
+
+      log =
+        capture_log(fn ->
+          assert GenerateAccessToken.generate_result("https://api.example.com/orders") ==
+                   {:error, :missing_credentials}
+        end)
+
+      assert log =~ "Access token not requested: EndPointBlank is missing "
+    end
+
+    refute_received {:token_request, _path, _body, _auth}
+  end
+
+  test "logs a transport error by its reason, never the whole term" do
+    stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
+
+    log =
+      capture_log(fn ->
+        GenerateAccessToken.generate_result("https://api.example.com/orders")
+      end)
+
+    assert log =~ "GenerateAccessToken error: Req.TransportError (econnrefused)"
+    refute log =~ "%Req.TransportError{"
   end
 
   test "returns nil and logs when intake cannot be reached" do

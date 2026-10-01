@@ -85,10 +85,12 @@ defmodule EndPointBlank.AccessTokens do
 
   `base_url` is the URL you are about to call. Its userinfo, query and
   fragment are removed first (`EndPointBlank.OutboundUrl.strip/1`): they are
-  never sent to intake, logged, or used as a cache or failure key. The rest is
-  sent as written; intake normalizes it and matches it against registered
+  never sent to intake, logged, or used as a cache or failure key. The scheme
+  and host are lowercased and a default or empty port is dropped; the path is
+  sent as written. intake normalizes it and matches it against registered
   base URLs by longest path prefix. A URL that is not a non-empty string, or
-  does not parse, is refused without asking intake.
+  that `OutboundUrl.strip/1` refuses (not an absolute `http` or `https` URL
+  with a host, or a port outside 1..65535), is refused without asking intake.
 
   Returns `nil` rather than raising if a token cannot be produced -- which
   includes a response that carried a token but no `base_url` (nothing to
@@ -116,13 +118,28 @@ defmodule EndPointBlank.AccessTokens do
   replaced or cleared -- or `:token_cache_unavailable` when this cache did not
   answer at all (it was not running, or a mint against a hung intake outlasted
   the #{@call_timeout_ms} ms the call allows). A `base_url` that is not a
-  non-empty string answers `{:error, :missing_base_url}`, and one that does
-  not parse `{:error, :invalid_base_url}`, without asking intake. Never
-  raises.
+  non-empty string answers `{:error, :missing_base_url}`, and one that
+  `OutboundUrl.strip/1` refuses (not an absolute `http` or `https` URL with a
+  host, or a port outside 1..65535) `{:error, :invalid_base_url}`, without
+  asking intake.
+
+  Two more answers are not a mint intake failed, so neither is recorded for
+  `last_failure/1` nor drops a held entry: `{:error, :missing_credentials}`
+  when `client_id` or `client_secret` is not configured (nothing is sent),
+  and `{:error, {:unexpected, reason}}` when minting raised, threw, or the
+  HTTP client answered something that is not a transport failure. `reason`
+  is what was raised, `{kind, term}` for a throw or exit, or the client's
+  error term. Never raises.
   """
   @spec token_result(term()) ::
           {:ok, String.t()}
-          | {:error, failure() | :token_cache_unavailable | :missing_base_url | :invalid_base_url}
+          | {:error,
+             failure()
+             | :token_cache_unavailable
+             | :missing_base_url
+             | :invalid_base_url
+             | :missing_credentials
+             | {:unexpected, term()}}
   def token_result(base_url) when is_binary(base_url) and base_url != "" do
     case OutboundUrl.strip(base_url) do
       {:ok, stripped} -> call({:token, stripped}, {:error, :token_cache_unavailable})
@@ -283,6 +300,16 @@ defmodule EndPointBlank.AccessTokens do
     case safe_generate(base_url) do
       {:ok, token, key, expired_at} ->
         store(base_url, key, token, expired_at, state)
+
+      # Neither is intake's answer about this URL: nothing was sent, or the
+      # mint itself broke. So neither is recorded as last_failure/1, and the
+      # held entry is left alone, as the Ruby SDK leaves it when its mint
+      # raises (sc-1469).
+      {:error, :missing_credentials} = error ->
+        {error, state}
+
+      {:error, {:unexpected, _reason}} = error ->
+        {error, state}
 
       {:error, reason} ->
         fail(base_url, reason, state)
@@ -451,9 +478,11 @@ defmodule EndPointBlank.AccessTokens do
   # from bad config. An SDK must not be able to crash the application it is
   # embedded in because intake is misconfigured.
   #
-  # It maps to a transport error, never to `:credential_rejected`: a raise
-  # says nothing whatever about the credential, and calling it permanent
-  # would tell every caller to stop retrying a bug in this SDK.
+  # It maps to `{:unexpected, _}`, never to `:credential_rejected` and no
+  # longer to a transport error: a raise says nothing whatever about the
+  # credential or about intake being reachable, and naming either would send
+  # the reader to the wrong fix (sc-1469). Only the exception's module, or the
+  # kind of throw, is logged: its message or term can carry request data.
   #
   # The payload is pulled apart in here rather than at the call site so that
   # it is covered by the same rescue: if `generate_result/1` ever stopped
@@ -468,12 +497,12 @@ defmodule EndPointBlank.AccessTokens do
     end
   rescue
     error ->
-      Logger.error("[EndPointBlank] Minting an access token raised: #{Exception.message(error)}")
-      {:error, {:transport_error, error}}
+      Logger.error("[EndPointBlank] Minting an access token raised #{inspect(error.__struct__)}")
+      {:error, {:unexpected, error}}
   catch
     kind, reason ->
-      Logger.error("[EndPointBlank] Minting an access token #{kind}: #{inspect(reason)}")
-      {:error, {:transport_error, {kind, reason}}}
+      Logger.error("[EndPointBlank] Minting an access token failed unexpectedly (#{kind})")
+      {:error, {:unexpected, {kind, reason}}}
   end
 
   defp not_near_expiry?(expires_at) do

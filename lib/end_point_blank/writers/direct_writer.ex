@@ -12,9 +12,25 @@ defmodule EndPointBlank.Writers.DirectWriter do
   }
 
   def write(url_key, payloads) when is_list(payloads) do
+    # Own intake, so Basic -- see EndPointBlank.Authorization.intake_header/0.
+    # Nothing is sent without both credentials (sc-1469); like every other
+    # failure here, that logs and returns rather than raising into the host.
+    case Authorization.intake_header() do
+      {:ok, auth} ->
+        post(url_key, payloads, auth)
+
+      {:error, :missing_credentials} ->
+        Logger.warning(
+          "[EndPointBlank] Write to #{url_key} not sent: " <>
+            Authorization.missing_credentials_message()
+        )
+
+        :error
+    end
+  end
+
+  defp post(url_key, payloads, auth) do
     url = apply(EndPointBlank.Config, @url_builders[url_key] || :errors_url, [])
-    # Own intake, so Basic -- see EndPointBlank.Authorization.basic_header/0.
-    auth = Authorization.basic_header()
     body = %{payload: payloads}
 
     case Http.post(url, body, auth) do
@@ -26,7 +42,7 @@ defmodule EndPointBlank.Writers.DirectWriter do
         :error
 
       {:error, reason} ->
-        Logger.warning("[EndPointBlank] Write to #{url_key} error: #{inspect(reason)}")
+        Logger.warning("[EndPointBlank] Write to #{url_key} error: #{Http.describe_error(reason)}")
         :error
     end
   end

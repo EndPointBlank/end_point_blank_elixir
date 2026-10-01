@@ -7,7 +7,14 @@ defmodule EndPointBlank.Writers.RequestWriterTest do
   setup do
     Req.Test.set_req_test_to_shared()
     Application.put_env(:end_point_blank_elixir, :req_test_plug, {Req.Test, __MODULE__.Stub})
-    Config.update(app_name: "test-app", environment: "test", log_base_url: "https://log.test")
+    # intake_header/0 sends nothing without both credentials (sc-1469).
+    Config.update(
+      app_name: "test-app",
+      environment: "test",
+      log_base_url: "https://log.test",
+      client_id: "cid",
+      client_secret: "csecret"
+    )
 
     test_pid = self()
 

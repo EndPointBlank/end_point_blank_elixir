@@ -73,30 +73,48 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
         # that bought nothing. With no Bearer there is no stale token, so the
         # 401 retry that used to live here is gone: a 401 now means the
         # credential is wrong, which is worth surfacing rather than retrying.
-        result = Http.post(Config.authorize_url(), body, Authorization.basic_header())
+        #
+        # Without both credentials nothing is sent (sc-1469): the request is
+        # refused as if intake were unavailable, failing closed.
+        case Authorization.intake_header() do
+          {:ok, auth} ->
+            post_authorize(body, auth, cache_key, conn)
 
-        case result do
-          {:ok, %Req.Response{status: 201, body: resp_body}} ->
-            source_env_id = source_env_id(resp_body)
+          {:error, :missing_credentials} ->
+            Logger.error(
+              "[EndPointBlank] Authorization not requested: " <>
+                Authorization.missing_credentials_message()
+            )
 
-            deprecation =
-              case resp_body do
-                %{"deprecation" => %{} = block} -> block
-                _ -> nil
-              end
-
-            AuthCache.put(cache_key, {source_env_id, deprecation})
-            RequestStore.put_source_env_id(source_env_id)
-            {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
-
-          {:ok, %Req.Response{status: s, body: b}} ->
-            Logger.error("[EndPointBlank] Authorization failed: status=#{s} body=#{inspect(b)}")
-            {:error, s, b}
-
-          {:error, reason} ->
-            Logger.error("[EndPointBlank] Authorization error: #{inspect(reason)}")
-            {:error, :service_unavailable}
+            {:error, :missing_credentials}
         end
+    end
+  end
+
+  defp post_authorize(body, auth, cache_key, conn) do
+    result = Http.post(Config.authorize_url(), body, auth)
+
+    case result do
+      {:ok, %Req.Response{status: 201, body: resp_body}} ->
+        source_env_id = source_env_id(resp_body)
+
+        deprecation =
+          case resp_body do
+            %{"deprecation" => %{} = block} -> block
+            _ -> nil
+          end
+
+        AuthCache.put(cache_key, {source_env_id, deprecation})
+        RequestStore.put_source_env_id(source_env_id)
+        {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
+
+      {:ok, %Req.Response{status: s, body: b}} ->
+        Logger.error("[EndPointBlank] Authorization failed: status=#{s} body=#{inspect(b)}")
+        {:error, s, b}
+
+      {:error, reason} ->
+        Logger.error("[EndPointBlank] Authorization error: #{Http.describe_error(reason)}")
+        {:error, :service_unavailable}
     end
   end
 

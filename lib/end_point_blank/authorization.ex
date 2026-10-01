@@ -13,8 +13,9 @@ defmodule EndPointBlank.Authorization do
       never be handed the credential.
     * **Calls to this SDK's own intake** -- authorize, token minting, endpoint
       updates and the log/request/response/error writers -- use
-      `basic_header/0`. intake already holds this service's credential, so
-      presenting it there reveals nothing.
+      `intake_header/0`. intake already holds this service's credential, so
+      presenting it there reveals nothing. It refuses, and nothing is sent,
+      when `client_id` or `client_secret` is nil or empty.
 
   There is deliberately no no-argument `header/0`. It used to answer Basic, and
   so did `header/1` whenever a mint failed, which handed the credential to
@@ -22,15 +23,23 @@ defmodule EndPointBlank.Authorization do
   revoked credential.
   """
 
-  alias EndPointBlank.{AccessTokens, Config, OutboundUrl, TokenUnavailableError}
+  alias EndPointBlank.{
+    AccessTokens,
+    Config,
+    ConfigurationError,
+    OutboundUrl,
+    TokenUnavailableError
+  }
 
   @typedoc """
   Why no `Bearer` header could be produced for an outbound call.
 
     * `:missing_base_url` -- the URL passed was not a non-empty string, so
       there is nothing to mint a token for.
-    * `:invalid_base_url` -- the URL did not parse, or has no scheme or host.
-      Refused locally: nothing is sent to intake.
+    * `:invalid_base_url` -- the URL is not an absolute `http` or `https` URL
+      with a host and, if one is written, a port from 1 to 65535 (see
+      `EndPointBlank.OutboundUrl.strip/1`). Refused locally: nothing is sent
+      to intake.
     * `:token_cache_unavailable` -- `EndPointBlank.AccessTokens` did not
       answer: it was not running, or a mint against a hung intake outlasted
       the call.
@@ -38,6 +47,15 @@ defmodule EndPointBlank.Authorization do
       not a non-empty token string. `EndPointBlank.AccessTokens` guarantees it
       does not, so this is a defensive refusal for a broken guarantee rather
       than an outcome to plan for; treat it as transient.
+    * `:missing_credentials` -- `client_id` or `client_secret` is not
+      configured (nil or empty). Nothing is sent and retrying cannot help:
+      configure both. `header!/1` raises `EndPointBlank.ConfigurationError`
+      for it, not `EndPointBlank.TokenUnavailableError`.
+    * `{:unexpected, reason}` -- the mint raised, threw, or the HTTP client
+      answered something that is not a transport failure: a bug or a bad
+      setting, not intake being out of reach. `reason` is what was raised,
+      `{kind, term}` for a throw or exit, or the client's error term. The
+      Ruby SDK's `TokenUnavailableError#unexpected?` marks the same case.
     * Any `t:EndPointBlank.AccessTokens.failure/0` -- the mint itself failed.
       `:credential_rejected` (intake answered 401) and
       `{:request_rejected, status}` are permanent; `{:server_error, status}`
@@ -48,6 +66,8 @@ defmodule EndPointBlank.Authorization do
           | :invalid_base_url
           | :token_cache_unavailable
           | :invalid_token
+          | :missing_credentials
+          | {:unexpected, term()}
           | AccessTokens.failure()
 
   @doc """
@@ -62,9 +82,11 @@ defmodule EndPointBlank.Authorization do
   first checking whether one exists, is what makes the Bearer path reachable.
 
   Returns `{:ok, "Bearer <token>"}`, or `{:error, reason}` (see `t:reason/0`)
-  when no token could be obtained. Never raises, and never returns HTTP Basic:
-  on an error, do not make the call. `TokenUnavailableError.message/1` turns a
-  reason into a human-readable explanation; `header!/1` raises one.
+  when no token could be obtained -- `:missing_credentials` when `client_id`
+  or `client_secret` is not configured, without a request. Never raises, and
+  never returns HTTP Basic: on an error, do not make the call.
+  `TokenUnavailableError.message/2` turns a reason into a human-readable
+  explanation; `header!/1` raises one.
   """
   @spec header(term()) :: {:ok, String.t()} | {:error, reason()}
   def header(base_url) when is_binary(base_url) and base_url != "" do
@@ -83,8 +105,15 @@ defmodule EndPointBlank.Authorization do
 
   @doc """
   Like `header/1`, but returns the `Bearer` header value itself and raises
-  `EndPointBlank.TokenUnavailableError` when no token could be obtained. The
-  exception's `:base_url` is the stripped URL, never the one passed in.
+  when there is none:
+
+    * `EndPointBlank.ConfigurationError` when `client_id` or `client_secret`
+      is not configured (`:missing_credentials`); nothing is sent.
+    * `EndPointBlank.TokenUnavailableError` for every other reason, including
+      a missing or unparseable URL (the Ruby SDK raises `ArgumentError` for
+      those) and a mint that failed unexpectedly (its `:unexpected` is
+      `true`). The exception's `:base_url` is the stripped URL, never the one
+      passed in.
 
   Never returns HTTP Basic.
   """
@@ -92,23 +121,84 @@ defmodule EndPointBlank.Authorization do
   def header!(base_url) do
     case header(base_url) do
       {:ok, value} -> value
+      {:error, :missing_credentials} -> raise ConfigurationError, missing: missing_credentials()
       {:error, reason} -> raise TokenUnavailableError, base_url: base_url, reason: reason
     end
   end
 
   @doc """
-  Returns an HTTP Basic `Authorization` header value built from this service's
-  own `client_id`/`client_secret`.
+  Returns `{:ok, "Basic <credentials>"}` for a call to this SDK's own intake,
+  or `{:error, :missing_credentials}` when `client_id` or `client_secret` is
+  nil or empty (sc-1469).
 
   **Only for calls to this SDK's own intake** (the configured `:base_url` and
-  `:log_base_url`). Never use it for a call to a provider: use `header/1`,
-  which refuses rather than sending the credential.
+  `:log_base_url`): the token request, authorize, the endpoint update and the
+  writers. intake already holds this service's credential, so presenting it
+  there discloses nothing. Never use it for a call to a provider: use
+  `header/1`, which refuses rather than sending the credential.
+
+  On an error, make no request. Building the header anyway would send
+  `Basic Og==` (base64 of `":"`), which intake answers with a 401 that reads
+  as a revoked credential. The SDK's own callers log
+  `EndPointBlank.ConfigurationError`'s message and return without sending.
+  """
+  @spec intake_header() :: {:ok, String.t()} | {:error, :missing_credentials}
+  def intake_header do
+    # One read, so the check and the header describe the same config.
+    config = Config.get()
+
+    case missing_credentials(config) do
+      [] -> {:ok, "Basic #{encode(config)}"}
+      _missing -> {:error, :missing_credentials}
+    end
+  end
+
+  @doc """
+  Like `intake_header/0`, but returns the header value itself and raises
+  `EndPointBlank.ConfigurationError`, naming what is missing, when
+  `client_id` or `client_secret` is nil or empty.
+  """
+  @spec intake_header!() :: String.t()
+  def intake_header! do
+    case intake_header() do
+      {:ok, value} -> value
+      {:error, :missing_credentials} -> raise ConfigurationError, missing: missing_credentials()
+    end
+  end
+
+  @doc """
+  The credential settings that are nil or empty right now: some of
+  `[:client_id, :client_secret]`, in that order, or `[]`.
+  """
+  @spec missing_credentials() :: [:client_id | :client_secret]
+  def missing_credentials, do: missing_credentials(Config.get())
+
+  @doc false
+  # The line the SDK's own intake callers log when intake_header/0 refuses:
+  # ConfigurationError's message, naming what is missing.
+  def missing_credentials_message do
+    Exception.message(ConfigurationError.exception(missing: missing_credentials()))
+  end
+
+  defp missing_credentials(config) do
+    for {key, value} <- [client_id: config.client_id, client_secret: config.client_secret],
+        value in [nil, ""],
+        do: key
+  end
+
+  @doc """
+  Returns an HTTP Basic `Authorization` header value built from this service's
+  own `client_id`/`client_secret`, whether or not they are set.
+
+  Prefer `intake_header/0`, which refuses when either is nil or empty instead
+  of answering `Basic Og==`; the SDK itself no longer calls this. **Only for
+  calls to this SDK's own intake.** Never use it for a call to a provider: use
+  `header/1`, which refuses rather than sending the credential.
   """
   def basic_header, do: "Basic #{basic_credentials()}"
 
   @doc "Returns Base64-encoded `client_id:client_secret`. See `basic_header/0`."
-  def basic_credentials do
-    config = Config.get()
-    Base.encode64("#{config.client_id}:#{config.client_secret}")
-  end
+  def basic_credentials, do: encode(Config.get())
+
+  defp encode(config), do: Base.encode64("#{config.client_id}:#{config.client_secret}")
 end

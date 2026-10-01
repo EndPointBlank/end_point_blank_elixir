@@ -111,6 +111,24 @@ defmodule EndPointBlank.Writers.DirectWriterTest do
       assert log =~ "422"
     end
 
+    test "sends nothing, and logs rather than raising, when the credentials are missing" do
+      # Building the header anyway sent `Basic Og==` (base64 of ":") to intake
+      # on every write (sc-1469). The writers run in the host's request path,
+      # so the refusal is logged and returned, never raised.
+      stub()
+      Config.update(client_id: "", client_secret: "")
+
+      for key <- [:logs, :errors, :requests, :responses] do
+        log = capture_log(fn -> assert DirectWriter.write(key, [%{a: 1}]) == :error end)
+
+        assert log =~
+                 "Write to #{key} not sent: " <>
+                   "EndPointBlank is missing client_id and client_secret: "
+      end
+
+      refute_received {:posted, _path, _body, _auth}
+    end
+
     test "returns :error rather than raising when intake is unreachable" do
       stub(fn conn -> Req.Test.transport_error(conn, :econnrefused) end)
 
