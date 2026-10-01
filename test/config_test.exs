@@ -646,6 +646,11 @@ defmodule EndPointBlank.ConfigTest do
             "abcdefghij01234567890-x7k2mq.r",
             "acima-x7k2mq-.r",
             "acima_x7k2mq.r",
+            # Nothing outside [a-z0-9-] may reach the derived hostname.
+            "acima-x7k2mq\n.r",
+            "evil.com@acima-x7k2mq.r",
+            "a:1-x7k2mq.r",
+            "ACIMA-X7K2MQ.r",
             123
           ] do
         assert Config.client_id_slug(value) == nil, "expected nil for #{inspect(value)}"

@@ -309,8 +309,8 @@ defmodule EndPointBlank.Config do
   The organization slug a `client_id` names, or `nil` for one without it
   (issued before sc-1463).
 
-  The same rule as app_portal's `Credentials.client_id_slug/1`, and in all
-  five SDKs: the part before the first `.` must have the exact shape of an
+  The same rule as app_portal's `Credentials.client_id_slug/1`, and the rule
+  all five SDKs will share: the part before the first `.` must have the exact shape of an
   organization slug, and something must follow the dot. "Contains a `.`" is
   not enough, because app_portal has always accepted a typed `client_id`, so a
   legacy `my.client` can exist and must keep calling the default intake.

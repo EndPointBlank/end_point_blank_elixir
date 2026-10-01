@@ -38,9 +38,11 @@ defmodule EndPointBlank.Http do
   @doc """
   The `x-epb-sdk` value sent on every call to intake: `elixir/<version>`, the
   version of this library as loaded (sc-1463). intake ignores it today; it is
-  there so intake can record the oldest version seen per credential, and so
-  tell whether every SDK using a credential is new enough to follow its
-  organization to another intake.
+  there so intake can record the oldest version seen per credential for the
+  move gate. That gate's minimum Elixir version is the release that turns
+  `derive_base_url_from_client_id` on by default, not the one that added this
+  header: with the option at its default, this version keeps calling
+  `in.endpointblank.com` after its organization moves.
   """
   def sdk_header do
     "elixir/" <> sdk_version()

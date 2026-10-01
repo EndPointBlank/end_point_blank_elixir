@@ -217,7 +217,10 @@ The logs hostname is not derived: `:log_base_url`, else
 
 Every call to intake also sends `x-epb-sdk: elixir/<version>`, so
 EndPointBlank can tell which SDK versions use a credential before it moves an
-organization to another intake.
+organization to another intake. The minimum Elixir version for a move is the
+release that turns `derive_base_url_from_client_id` on by default, **not**
+this one: with the option at its default here, the SDK keeps calling
+`https://in.endpointblank.com` after its organization has moved.
 
 ### 12-factor / env-var example
 

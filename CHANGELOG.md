@@ -89,8 +89,11 @@
   hostname (`:log_base_url`) is never derived.
 - **Every call to intake sends `x-epb-sdk: elixir/<version>` (sc-1463)**, with
   the version of this library as loaded. intake ignores it today; it will
-  record the oldest version seen per credential, so an organization moves to
-  another intake only when every SDK using its credentials can follow it.
+  record the oldest version seen per credential for the move gate. **This
+  release is not that gate's minimum Elixir version:** derivation is off by
+  default here, so a host on this version with the default config keeps
+  calling `in.endpointblank.com` after its organization moves. The minimum is
+  the release that turns `derive_base_url_from_client_id` on by default.
 
 ### Unchanged
 
