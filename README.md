@@ -626,7 +626,7 @@ Clients.stream(mgmt)
 |> Stream.filter(&(&1["status"] == "pending"))
 |> Enum.each(&IO.puts(&1["name"]))
 
-# Invite a client (the organization that calls your API) and assign a package.
+# Invite a client (the source organization that calls your API) and assign a package.
 {:ok, package} = ApiPackages.create(mgmt, %{name: "Partner API"})
 
 {:ok, client} =

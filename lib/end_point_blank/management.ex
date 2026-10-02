@@ -61,7 +61,7 @@ defmodule EndPointBlank.Management do
   alias EndPointBlank.Management.Error
 
   @default_base_url "https://app.endpointblank.com"
-  @key_prefix "epb_mk_"
+  @key_format ~r/\Aepb_mk_[A-Za-z0-9_-]+\z/
 
   @derive {Inspect, except: [:key]}
   @enforce_keys [:key]
@@ -105,7 +105,8 @@ defmodule EndPointBlank.Management do
     * `:sleep` -- the function that waits between retries, given
       milliseconds. Defaults to `Process.sleep/1`; tests pass their own.
     * `:req_options` -- extra `Req` options for every request (for example
-      `plug:` in tests). Options this client sets itself win.
+      `plug:` in tests). Options this client sets itself win, and `:auth` is
+      dropped: the only credential sent is the management key.
   """
   @spec new(keyword()) :: t()
   def new(opts) when is_list(opts) do
@@ -114,7 +115,8 @@ defmodule EndPointBlank.Management do
     unless valid_key?(key) do
       raise ArgumentError,
             "EndPointBlank.Management needs a management API key (epb_mk_...) as :key; " <>
-              "the value given is not one. Runtime client credentials can't be used here."
+              "the value given is not one (check for a trailing newline or space). " <>
+              "Runtime client credentials can't be used here."
     end
 
     %__MODULE__{
@@ -122,7 +124,7 @@ defmodule EndPointBlank.Management do
       base_url: base_url!(Keyword.get(opts, :base_url, @default_base_url)),
       max_retries: non_neg_integer!(opts, :max_retries, 2),
       max_retry_wait_ms: non_neg_integer!(opts, :max_retry_wait_ms, 60_000),
-      receive_timeout: non_neg_integer!(opts, :receive_timeout, 15_000),
+      receive_timeout: pos_integer!(opts, :receive_timeout, 15_000),
       sleep: sleep!(Keyword.get(opts, :sleep, &Process.sleep/1)),
       req_options: Keyword.get(opts, :req_options, [])
     }
@@ -146,8 +148,10 @@ defmodule EndPointBlank.Management do
   @spec base_url(t()) :: String.t()
   def base_url(%__MODULE__{base_url: base_url}), do: base_url
 
-  defp valid_key?(key) when is_binary(key),
-    do: String.starts_with?(key, @key_prefix) and byte_size(key) > byte_size(@key_prefix)
+  # Keys are minted as "epb_mk_" plus URL-safe base64, so anything else -- a
+  # trailing newline from a secrets file, a space, a control byte -- is not a
+  # key, and is refused here rather than failing later as a transport error.
+  defp valid_key?(key) when is_binary(key), do: Regex.match?(@key_format, key)
 
   defp valid_key?(_key), do: false
 
@@ -169,6 +173,13 @@ defmodule EndPointBlank.Management do
     case Keyword.get(opts, name, default) do
       value when is_integer(value) and value >= 0 -> value
       _other -> raise ArgumentError, "#{inspect(name)} must be a non-negative integer"
+    end
+  end
+
+  defp pos_integer!(opts, name, default) do
+    case Keyword.get(opts, name, default) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> raise ArgumentError, "#{inspect(name)} must be a positive integer"
     end
   end
 

@@ -41,7 +41,12 @@ defmodule EndPointBlank.ManagementIntegrationTest do
         base_url: System.get_env("EPB_MGMT_BASE_URL")
       )
 
-    on_exit(fn -> clean_up(mgmt, Agent.get(created, & &1)) end)
+    # Unlinked so it outlives the test process for on_exit, and stopped there.
+    on_exit(fn ->
+      tracked = Agent.get(created, & &1)
+      Agent.stop(created)
+      clean_up(mgmt, tracked)
+    end)
 
     %{mgmt: mgmt, created: created, suffix: Integer.to_string(System.unique_integer([:positive]))}
   end

@@ -128,12 +128,24 @@ defmodule EndPointBlank.Management.Request do
   end
 
   defp encode_path(segments) do
-    if Enum.all?(segments, &(is_binary(&1) and &1 != "")) do
+    if Enum.all?(segments, &valid_segment?/1) do
       {:ok, "/api/v1" <> Enum.map_join(segments, &encode_segment/1)}
     else
-      {:error, Error.invalid_request("Every id in the path must be a non-empty string.")}
+      {:error,
+       Error.invalid_request(
+         "Every id in the path must be a non-empty string that is not only dots."
+       )}
     end
   end
+
+  # "." and ".." are left as they are by percent-encoding, and anything that
+  # normalizes the path on the way (a proxy, a CDN) would turn
+  # DELETE /api_packages/P/endpoints/.. into DELETE /api_packages/P. No id is
+  # only dots, so such a segment is refused rather than sent.
+  defp valid_segment?(segment) when is_binary(segment),
+    do: segment != "" and not String.match?(segment, ~r/\A\.+\z/)
+
+  defp valid_segment?(_segment), do: false
 
   defp encode_segment(segment), do: "/" <> URI.encode(segment, &URI.char_unreserved?/1)
 
@@ -155,7 +167,11 @@ defmodule EndPointBlank.Management.Request do
         receive_timeout: client.receive_timeout
       ] ++ json_option(opts[:json]) ++ params_option(opts[:params])
 
-    Keyword.merge(client.req_options, own)
+    # A caller's `auth:` would replace the Bearer header (Req's auth step runs
+    # after headers), so it is dropped; `headers:` is replaced by ours.
+    client.req_options
+    |> Keyword.delete(:auth)
+    |> Keyword.merge(own)
   end
 
   defp idempotency_header(nil), do: []

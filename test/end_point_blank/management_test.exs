@@ -147,6 +147,34 @@ defmodule EndPointBlank.ManagementTest do
       assert_raise ArgumentError, fn -> Management.new([]) end
     end
 
+    test "refuses a key with a character a key never has, without repeating it" do
+      for key <- ["epb_mk_abc\n", "epb_mk_a b", "epb_mk_abc\r\n", "epb_mk_\u00e9", "epb_mk_a\0b"] do
+        error = assert_raise ArgumentError, fn -> Management.new(key: key) end
+        refute error.message =~ key
+        refute error.message =~ String.trim(key)
+      end
+
+      assert %Management{} = Management.new(key: "epb_mk_AZaz09_-")
+    end
+
+    test "receive_timeout must be positive" do
+      assert_raise ArgumentError, fn -> Management.new(key: @key, receive_timeout: 0) end
+    end
+
+    test "req_options cannot replace the Bearer key" do
+      mgmt =
+        client([one(%{})],
+          req_options: [
+            plug: stub([one(%{})]),
+            auth: {:bearer, "other"},
+            headers: [{"authorization", "Basic x"}]
+          ]
+        )
+
+      assert {:ok, _} = Organization.get(mgmt)
+      assert next_request().headers["authorization"] == "Bearer " <> @key
+    end
+
     test "refuses a base URL that is not absolute http(s)" do
       assert_raise ArgumentError, fn ->
         Management.new(key: @key, base_url: "app.endpointblank.com")
@@ -635,6 +663,37 @@ defmodule EndPointBlank.ManagementTest do
       assert {:error, %Error{code: "invalid_request"}} = Clients.get(mgmt, "")
       assert {:error, %Error{code: "invalid_request"}} = ClientGrants.list(mgmt, nil)
       refute_received {:request, _}
+    end
+
+    test "dot-segment ids are refused without a request" do
+      mgmt = client([])
+
+      assert {:error, %Error{code: "invalid_request"}} =
+               ApiPackages.remove_endpoint(mgmt, "p1", "..")
+
+      assert {:error, %Error{code: "invalid_request"}} = ClientPackages.delete(mgmt, "c1", "..")
+
+      assert {:error, %Error{code: "invalid_request"}} =
+               ApplicationEnvironments.delete(mgmt, "app1", "..")
+
+      assert {:error, %Error{code: "invalid_request"}} = Applications.get(mgmt, ".")
+      assert {:error, %Error{code: "invalid_request"}} = Clients.get(mgmt, "...")
+
+      for id <- ["..", "."] do
+        customer = Management.for_managed_client(mgmt, id)
+        assert {:error, %Error{code: "invalid_request"}} = Credentials.list(customer)
+
+        assert {:error, %Error{code: "invalid_request"}} =
+                 Applications.create(customer, %{name: "x"})
+      end
+
+      refute_received {:request, _}
+    end
+
+    test "an id with dots among other characters is still sent" do
+      mgmt = client([one(%{})])
+      assert {:ok, _} = Clients.get(mgmt, "a..b")
+      assert %{path: "/api/v1/clients/a..b"} = next_request()
     end
   end
 
