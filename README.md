@@ -702,14 +702,19 @@ whose `Applications`, `ApplicationEnvironments`, `Environments` and
 {:ok, managed} = Clients.create(mgmt, %{name: "Customer Co", managed: true})
 customer = Management.for_managed_client(mgmt, managed["id"])
 
-{:ok, app} = Management.Applications.create(customer, %{name: "orders"})
-{:ok, env} = Management.Environments.create(customer, %{name: "production"})
+# An environment needs a name and a domain; an application needs a base URL in
+# at least one environment, and is placed in each one it is given.
+{:ok, env} =
+  Management.Environments.create(customer, %{name: "staging", domain: "staging.customer.example"})
 
-{:ok, app_env} =
-  Management.ApplicationEnvironments.create(customer, app["id"], %{
-    environment_id: env["id"],
-    base_url: "https://orders.customer.example"
+{:ok, app} =
+  Management.Applications.create(customer, %{
+    name: "orders",
+    environment_base_urls: %{env["id"] => "https://orders.staging.customer.example"}
   })
+
+{:ok, %Management.Page{data: [app_env | _]}} =
+  Management.ApplicationEnvironments.list(customer, app["id"])
 
 {:ok, credential} = Credentials.create(customer, %{application_environment_id: app_env["id"]})
 

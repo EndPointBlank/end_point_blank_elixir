@@ -24,8 +24,10 @@ defmodule EndPointBlank.Management.ApplicationEnvironments do
     do: Request.stream(client, :managed, ["applications", application_id, "environments"], opts)
 
   @doc """
-  Deploys an application to an environment. `attrs`: `environment_id` and
-  `base_url` (required). Options: `idempotency_key:`.
+  Deploys an application to one more environment. `attrs`: `environment_id`
+  and `base_url` (required). Refused with `"validation_failed"` for an
+  environment the application is already in (including those it was created
+  with). Options: `idempotency_key:`.
   """
   @spec create(Management.t(), String.t(), map() | keyword(), keyword()) ::
           Management.result(map())

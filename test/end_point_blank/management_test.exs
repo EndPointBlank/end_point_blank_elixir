@@ -461,10 +461,18 @@ defmodule EndPointBlank.ManagementTest do
       assert {:ok, %{"id" => "app1"}} = Applications.get(mgmt, "app1")
       assert %{method: "GET", path: "/api/v1/applications/app1"} = next_request()
 
-      assert {:ok, %{"name" => "billing"}} = Applications.create(mgmt, %{name: "billing"})
+      assert {:ok, %{"name" => "billing"}} =
+               Applications.create(mgmt, %{
+                 name: "billing",
+                 environment_base_urls: %{"env1" => "https://billing.example.test"}
+               })
 
-      assert %{method: "POST", path: "/api/v1/applications", body: %{"name" => "billing"}} =
-               next_request()
+      assert %{method: "POST", path: "/api/v1/applications", body: body} = next_request()
+
+      assert body == %{
+               "name" => "billing",
+               "environment_base_urls" => %{"env1" => "https://billing.example.test"}
+             }
 
       assert {:ok, %{"public" => true}} = Applications.update(mgmt, "app1", public: true)
 
@@ -519,10 +527,14 @@ defmodule EndPointBlank.ManagementTest do
       assert {:ok, %{"id" => "env1"}} = Environments.get(mgmt, "env1")
       assert %{method: "GET", path: "/api/v1/environments/env1"} = next_request()
 
-      assert {:ok, %{"id" => "env2"}} = Environments.create(mgmt, %{name: "staging"})
+      assert {:ok, %{"id" => "env2"}} =
+               Environments.create(mgmt, %{name: "staging", domain: "staging.example.test"})
 
-      assert %{method: "POST", path: "/api/v1/environments", body: %{"name" => "staging"}} =
-               next_request()
+      assert %{
+               method: "POST",
+               path: "/api/v1/environments",
+               body: %{"name" => "staging", "domain" => "staging.example.test"}
+             } = next_request()
 
       assert {:ok, %{"name" => "qa"}} = Environments.update(mgmt, "env2", %{name: "qa"})
 

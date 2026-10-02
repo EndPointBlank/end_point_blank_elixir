@@ -27,8 +27,15 @@ defmodule EndPointBlank.Management.Applications do
     do: client |> Request.get(:managed, ["applications", id]) |> Request.data()
 
   @doc """
-  Creates an application. `attrs`: `name` (required), `public`,
-  `organization_group_id`. Options: `idempotency_key:`.
+  Creates an application. `attrs`: `name` and `environment_base_urls`
+  (required: a map of environment id to base URL, at least one entry; the
+  application is placed in each), `public`, `organization_group_id`. Options:
+  `idempotency_key:`.
+
+      Applications.create(mgmt, %{
+        name: "orders",
+        environment_base_urls: %{environment_id => "https://orders.example.com"}
+      })
   """
   @spec create(Management.t(), map() | keyword(), keyword()) :: Management.result(map())
   def create(%Management{} = client, attrs, opts \\ []),

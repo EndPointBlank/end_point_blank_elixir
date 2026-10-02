@@ -28,7 +28,7 @@ defmodule EndPointBlank.Management.Environments do
     do: client |> Request.get(:managed, ["environments", id]) |> Request.data()
 
   @doc """
-  Creates an environment. `attrs`: `name` (required), `domain`,
+  Creates an environment. `attrs`: `name` and `domain` (required),
   `is_default`. Options: `idempotency_key:`.
   """
   @spec create(Management.t(), map() | keyword(), keyword()) :: Management.result(map())

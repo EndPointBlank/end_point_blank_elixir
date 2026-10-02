@@ -8,7 +8,17 @@ defmodule EndPointBlank.Management.ManagedClients do
   `EndPointBlank.Management.for_managed_client/2`:
 
       customer = EndPointBlank.Management.for_managed_client(mgmt, client_id)
-      {:ok, app} = EndPointBlank.Management.Applications.create(customer, %{name: "billing"})
+      {:ok, env} =
+        EndPointBlank.Management.Environments.create(customer, %{
+          name: "staging",
+          domain: "staging.customer.example"
+        })
+
+      {:ok, app} =
+        EndPointBlank.Management.Applications.create(customer, %{
+          name: "billing",
+          environment_base_urls: %{env["id"] => "https://billing.staging.customer.example"}
+        })
 
   This module sends the claim invite that hands one over.
   """

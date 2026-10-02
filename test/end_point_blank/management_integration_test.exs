@@ -57,25 +57,40 @@ defmodule EndPointBlank.ManagementIntegrationTest do
     # Organization
     assert {:ok, %{"id" => _, "key" => %{"scope" => "write"}}} = Organization.get(mgmt)
 
-    # An application deployed to a new environment
-    application = ok!(Applications.create(mgmt, %{name: "sdk-it-app-#{suffix}"}))
-    track.(:application, application["id"])
-
-    environment = ok!(Environments.create(mgmt, %{name: "sdk-it-env-#{suffix}"}))
+    # Two new environments (the organization already has others, production
+    # among them), then an application placed in the first. An application
+    # needs a base URL in at least one environment when it is created.
+    environment = ok!(Environments.create(mgmt, environment_attrs("sdk-it-env-#{suffix}")))
     track.(:environment, environment["id"])
 
-    app_env =
+    second_environment =
+      ok!(Environments.create(mgmt, environment_attrs("sdk-it-env2-#{suffix}")))
+
+    track.(:second_environment, second_environment["id"])
+
+    application =
       ok!(
-        ApplicationEnvironments.create(mgmt, application["id"], %{
-          environment_id: environment["id"],
-          base_url: "https://sdk-it-#{suffix}.example.com"
+        Applications.create(mgmt, %{
+          name: "sdk-it-app-#{suffix}",
+          environment_base_urls: %{environment["id"] => "https://sdk-it-#{suffix}.example.com"}
         })
       )
 
-    track.(:app_env, {application["id"], app_env["id"]})
+    track.(:application, application["id"])
 
-    assert {:ok, %Page{data: app_envs}} = ApplicationEnvironments.list(mgmt, application["id"])
-    assert Enum.any?(app_envs, &(&1["id"] == app_env["id"]))
+    app_env = app_env_in(mgmt, application["id"], environment["id"])
+
+    # The second environment is added, and later removed, on its own.
+    second_app_env =
+      ok!(
+        ApplicationEnvironments.create(mgmt, application["id"], %{
+          environment_id: second_environment["id"],
+          base_url: "https://sdk-it-#{suffix}-2.example.com"
+        })
+      )
+
+    track.(:app_env, {application["id"], second_app_env["id"]})
+    assert second_app_env["environment_id"] == second_environment["id"]
 
     # An API package, with a deployed endpoint when there is one
     package = ok!(ApiPackages.create(mgmt, %{name: "sdk-it-package-#{suffix}"}))
@@ -137,6 +152,11 @@ defmodule EndPointBlank.ManagementIntegrationTest do
     assert {:ok, %{"deleted" => true}} = Credentials.revoke(mgmt, credential["id"])
     track.(:credential, nil)
 
+    assert {:ok, %{"deleted" => true}} =
+             ApplicationEnvironments.delete(mgmt, application["id"], second_app_env["id"])
+
+    track.(:app_env, nil)
+
     # A managed client, with its own application, environment and credential
     case Clients.create(mgmt, %{name: "sdk-it-managed-#{suffix}", managed: true}) do
       {:ok, managed} ->
@@ -144,18 +164,20 @@ defmodule EndPointBlank.ManagementIntegrationTest do
         assert managed["managed"] == true
         customer = Management.for_managed_client(mgmt, managed["id"])
 
-        customer_app = ok!(Applications.create(customer, %{name: "sdk-it-customer-#{suffix}"}))
-
         customer_env =
-          ok!(Environments.create(customer, %{name: "sdk-it-customer-env-#{suffix}"}))
+          ok!(Environments.create(customer, environment_attrs("sdk-it-customer-env-#{suffix}")))
 
-        customer_app_env =
+        customer_app =
           ok!(
-            ApplicationEnvironments.create(customer, customer_app["id"], %{
-              environment_id: customer_env["id"],
-              base_url: "https://sdk-it-customer-#{suffix}.example.com"
+            Applications.create(customer, %{
+              name: "sdk-it-customer-#{suffix}",
+              environment_base_urls: %{
+                customer_env["id"] => "https://sdk-it-customer-#{suffix}.example.com"
+              }
             })
           )
+
+        customer_app_env = app_env_in(customer, customer_app["id"], customer_env["id"])
 
         customer_credential =
           ok!(Credentials.create(customer, %{application_environment_id: customer_app_env["id"]}))
@@ -175,6 +197,16 @@ defmodule EndPointBlank.ManagementIntegrationTest do
       {:error, %Error{code: "plan_limit", status: 402}} ->
         :ok
     end
+  end
+
+  defp environment_attrs(name), do: %{name: name, domain: "#{name}.example.com"}
+
+  # The application environment an application was created with.
+  defp app_env_in(mgmt, application_id, environment_id) do
+    mgmt
+    |> ApplicationEnvironments.stream(application_id)
+    |> Enum.find(&(&1["environment_id"] == environment_id)) ||
+      flunk("no application environment for #{environment_id}")
   end
 
   defp ok!({:ok, value}), do: value
@@ -198,6 +230,7 @@ defmodule EndPointBlank.ManagementIntegrationTest do
     end
 
     if id = created[:application], do: Applications.delete(mgmt, id)
+    if id = created[:second_environment], do: Environments.delete(mgmt, id)
     if id = created[:environment], do: Environments.delete(mgmt, id)
     :ok
   end
