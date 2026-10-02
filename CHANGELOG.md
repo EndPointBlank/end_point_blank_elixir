@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A client for the organization management API (sc-1504).**
+  `EndPointBlank.Management.new(key: "epb_mk_...")` builds it, separate from
+  the runtime SDK: it reads none of `EndPointBlank.configure/1`'s settings,
+  sends only the management key (as `Authorization: Bearer`, to
+  `https://app.endpointblank.com` or `:base_url`), refuses a key that is not
+  `epb_mk_...`, and leaves the key out of `inspect/1` and every error. One
+  module per resource: `Organization`, `ApiPackages` (with `list_endpoints`,
+  `add_endpoint`, `remove_endpoint`), `Endpoints`, `Clients`,
+  `ClientPackages`, `ClientGrants`, `Applications`,
+  `ApplicationEnvironments`, `Environments`, `Credentials` (`create`,
+  `rotate`, `delete`/`revoke`) and `ManagedClients` (`claim_invite`);
+  `Management.for_managed_client/2` scopes applications, environments and
+  credentials to a managed client. Every call answers `{:ok, data}` or
+  `{:error, %EndPointBlank.Management.Error{}}` (`code`, `message`,
+  `details`, `status`, `retry_after`, `location`); lists answer an
+  `EndPointBlank.Management.Page` and have a lazy `stream`. Every POST sends
+  an `Idempotency-Key` (generated, or `idempotency_key:`), reused on retry.
+  `429` is retried after `Retry-After`, and 5xx or transport failures for
+  GET, DELETE and POST only, at most `:max_retries` (default 2) times;
+  `idempotency_replay_unavailable` is never retried. No new dependencies:
+  it uses `Req`, as the rest of the SDK does.
+
 ## 0.9.0
 
 ### Breaking

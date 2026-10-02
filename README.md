@@ -595,6 +595,138 @@ Stacktraces and log messages are never masked.
 A bad regex or an unparseable path makes that rule a no-op rather than raising — masking never
 breaks the request it's protecting.
 
+## Management API
+
+`EndPointBlank.Management` is a client for the organization management API
+(`/api/v1`): your organization, API packages, clients and what they hold,
+applications, environments, runtime credentials and managed clients. Use it
+to automate what you would otherwise do in the portal.
+
+It is separate from everything above. It reads none of the
+`EndPointBlank.configure/1` settings, and it never sends your runtime
+`client_id`/`client_secret`: its only credential is a **management key**
+(`epb_mk_...`, created in the portal), sent as `Authorization: Bearer` to
+`https://app.endpointblank.com` (or the `:base_url` you give it). Keep the key
+out of logs; `inspect/1` of the client leaves it out.
+
+### Quickstart
+
+```elixir
+alias EndPointBlank.Management
+alias EndPointBlank.Management.{ApiPackages, ClientPackages, Clients, Credentials, Error}
+
+mgmt = Management.new(key: System.fetch_env!("EPB_MGMT_KEY"))
+
+{:ok, organization} = Management.Organization.get(mgmt)
+
+# One page (limit 1..100, default 50), then every client, a page at a time.
+{:ok, %Management.Page{data: clients, next_cursor: cursor}} = Clients.list(mgmt, limit: 20)
+
+Clients.stream(mgmt)
+|> Stream.filter(&(&1["status"] == "pending"))
+|> Enum.each(&IO.puts(&1["name"]))
+
+# Invite a client (the source organization that calls your API) and assign a package.
+{:ok, package} = ApiPackages.create(mgmt, %{name: "Partner API"})
+
+{:ok, client} =
+  Clients.create(mgmt, %{
+    name: "Acme",
+    contacts: [%{email: "dev@acme.example", first_name: "Ada", last_name: "Lovelace"}]
+  })
+
+# Send client["invite_code"] to Acme; it accepts from its own organization.
+{:ok, _assignment} =
+  ClientPackages.create(mgmt, client["id"], %{
+    api_package_id: package["id"],
+    environment_id: production_environment_id
+  })
+
+# Issue a runtime credential for one of your application environments, then
+# rotate it. client_secret is in these two answers only: store it now.
+{:ok, credential} = Credentials.create(mgmt, %{application_environment_id: app_env_id})
+store_secret(credential["client_id"], credential["client_secret"])
+
+{:ok, rotated} = Credentials.rotate(mgmt, credential["id"])
+store_secret(rotated["client_id"], rotated["client_secret"])
+```
+
+Every call answers `{:ok, data}` or `{:error, %EndPointBlank.Management.Error{}}`
+and never raises (the `stream` functions raise the error, since a stream
+cannot answer a tuple). `data` is the API's JSON with string keys.
+
+### Errors
+
+Match on `code`, which is stable; `message` is for people. `details` holds
+field errors for `validation_failed`, and `status` the HTTP status. A code the
+SDK does not know yet still arrives as given
+(`Error.known_codes/0` lists the documented ones).
+
+```elixir
+case ClientPackages.create(mgmt, client_id, attrs) do
+  {:ok, assignment} -> {:ok, assignment}
+  {:error, %Error{code: "already_assigned"}} -> :ok
+  {:error, %Error{code: "nothing_published_in_environment", message: message}} -> {:error, message}
+  {:error, %Error{code: "validation_failed", details: details}} -> {:error, details}
+  {:error, %Error{code: "plan_limit"}} -> {:error, :upgrade_plan}
+  {:error, %Error{} = error} -> {:error, Exception.message(error)}
+end
+```
+
+### Retries and idempotency
+
+Every POST carries an `Idempotency-Key`, a random UUID unless you pass
+`idempotency_key:` (for example to make a job that may run twice create one
+client, not two). The client retries a call at most `:max_retries` times
+(default 2, `0` turns it off), with the same key:
+
+- `429 rate_limited`, after its `Retry-After` seconds (up to
+  `:max_retry_wait_ms`, default 60 s);
+- `409 idempotency_request_in_progress`;
+- a 5xx answer (`intake_unavailable`, `audit_unavailable`,
+  `internal_server_error`, ...) or no answer at all, for GET, DELETE and POST.
+  A PATCH is never retried for these.
+
+`409 idempotency_replay_unavailable` is never retried: the first create or
+rotate succeeded but its secret cannot be shown again. Get or list the
+credential, and rotate it if the secret was lost.
+
+### Managed clients
+
+A managed client is a client organization you create and run for your
+customer until they claim it. `Management.for_managed_client/2` gives a client
+whose `Applications`, `ApplicationEnvironments`, `Environments` and
+`Credentials` calls act on that organization (`/api/v1/clients/:client_id/...`).
+
+```elixir
+{:ok, managed} = Clients.create(mgmt, %{name: "Customer Co", managed: true})
+customer = Management.for_managed_client(mgmt, managed["id"])
+
+# An environment needs a name and a domain; an application needs a base URL in
+# at least one environment, and is placed in each one it is given.
+{:ok, env} =
+  Management.Environments.create(customer, %{name: "staging", domain: "staging.customer.example"})
+
+{:ok, app} =
+  Management.Applications.create(customer, %{
+    name: "orders",
+    environment_base_urls: %{env["id"] => "https://orders.staging.customer.example"}
+  })
+
+{:ok, %Management.Page{data: [app_env | _]}} =
+  Management.ApplicationEnvironments.list(customer, app["id"])
+
+{:ok, credential} = Credentials.create(customer, %{application_environment_id: app_env["id"]})
+
+# Hand it over: the first person to accept becomes its owner, and its
+# credentials are rotated.
+{:ok, _invite} = Management.ManagedClients.claim_invite(mgmt, managed["id"], "owner@customer.example")
+```
+
+The integration test (`test/end_point_blank/management_integration_test.exs`)
+runs this flow against a real app_portal when `EPB_MGMT_BASE_URL` and
+`EPB_MGMT_KEY` are set, and is skipped otherwise.
+
 ## Framework integration
 
 The SDK ships two `Plug` modules and a Phoenix-only registrar/versioning
@@ -679,6 +811,8 @@ lib/end_point_blank/commands/            # EndpointAuthorize, EndpointUpdate, Ge
 lib/end_point_blank/writers/             # Direct/Delayed writers + Request/Response/Log/ExceptionWriter
 lib/end_point_blank/plug/                # Authorized, ReportInteraction
 lib/end_point_blank/phoenix/             # EndpointRegistrar, Versioned, RoutePatternFinder
+lib/end_point_blank/management.ex         # management API client (Bearer epb_mk_ key, /api/v1)
+lib/end_point_blank/management/          # one module per resource, Error, Page, Request
 test/                                     # ExUnit test suite
 ```
 
