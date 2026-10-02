@@ -48,10 +48,12 @@ defmodule EndPointBlank.Http do
     "elixir/" <> sdk_version()
   end
 
+  @doc false
   # Read from the loaded application spec rather than baked in at compile
   # time, so it is the version actually running. "unknown" only if the
   # application is not loaded, which no call path here allows in practice.
-  defp sdk_version do
+  # Also names the version in `EndPointBlank.Management`'s User-Agent.
+  def sdk_version do
     case Application.spec(:end_point_blank_elixir, :vsn) do
       nil -> "unknown"
       vsn -> List.to_string(vsn)
