@@ -605,6 +605,17 @@ defmodule EndPointBlank.ManagementTest do
              } = next_request()
     end
 
+    test "claim_invite/4 sends return_to when given" do
+      mgmt = client([one(%{"client_id" => "c1", "email" => "owner@customer.test"}, 201)])
+      return_to = "https://provider.test/portal/credential/claimed"
+
+      assert {:ok, _} =
+               ManagedClients.claim_invite(mgmt, "c1", "owner@customer.test", return_to: return_to)
+
+      assert %{body: body} = next_request()
+      assert body == %{"email" => "owner@customer.test", "return_to" => return_to}
+    end
+
     test "for_managed_client/2 scopes applications, environments and credentials" do
       mgmt =
         client([

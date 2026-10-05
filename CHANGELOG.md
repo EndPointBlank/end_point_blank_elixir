@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.1
+
+### Added
+
+- **`ManagedClients.claim_invite/4` takes `return_to:`.** A URL registered
+  under the provider organization's claim return URLs; once the user accepts
+  the claim, EndPointBlank sends their browser back to it, as an OAuth
+  `redirect_uri` would. Refused with `"return_to_not_registered"` otherwise.
+
 ## 0.10.0
 
 ### Added
