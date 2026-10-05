@@ -23,7 +23,7 @@ Or depend on a release tag of the git repo directly:
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.10.0"}
+    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.10.1"}
   ]
 end
 ```
@@ -719,8 +719,14 @@ customer = Management.for_managed_client(mgmt, managed["id"])
 {:ok, credential} = Credentials.create(customer, %{application_environment_id: app_env["id"]})
 
 # Hand it over: the first person to accept becomes its owner, and its
-# credentials are rotated.
-{:ok, _invite} = Management.ManagedClients.claim_invite(mgmt, managed["id"], "owner@customer.example")
+# credentials are rotated. `return_to:` (optional) is where their browser lands
+# after accepting; it must be a URL your organization registered as a claim
+# return URL in EndPointBlank, or the call is refused with 422
+# `return_to_not_registered`.
+{:ok, _invite} =
+  Management.ManagedClients.claim_invite(mgmt, managed["id"], "owner@customer.example",
+    return_to: "https://app.example.com/onboarding/done"
+  )
 ```
 
 The integration test (`test/end_point_blank/management_integration_test.exs`)

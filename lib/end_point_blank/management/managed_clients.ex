@@ -31,13 +31,19 @@ defmodule EndPointBlank.Management.ManagedClients do
   (`POST /api/v1/clients/:client_id/claim_invites`). Answers
   `%{"client_id", "email", "sent_at", "expires_at"}`. Refused with
   `"client_not_managed"` when the client is not an unclaimed managed client of
-  yours. Options: `idempotency_key:`.
+  yours. Options: `idempotency_key:`, and `return_to:`, a URL registered under
+  your organization's claim return URLs that EndPointBlank sends the user's
+  browser back to once they accept (refused with `"return_to_not_registered"`
+  otherwise).
   """
   @spec claim_invite(Management.t(), String.t(), String.t(), keyword()) ::
           Management.result(map())
   def claim_invite(%Management{} = client, client_id, email, opts \\ []) do
+    {return_to, opts} = Keyword.pop(opts, :return_to)
+    body = if return_to, do: %{email: email, return_to: return_to}, else: %{email: email}
+
     client
-    |> Request.post(:organization, ["clients", client_id, "claim_invites"], %{email: email}, opts)
+    |> Request.post(:organization, ["clients", client_id, "claim_invites"], body, opts)
     |> Request.data()
   end
 end
