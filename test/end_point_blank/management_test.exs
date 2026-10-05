@@ -971,6 +971,7 @@ defmodule EndPointBlank.ManagementTest do
       refute Error.known_code?("brand_new_refusal")
       assert Error.known_code?("plan_limit")
       assert Error.known_codes()["rate_limited"] == 429
+      assert Error.known_codes()["return_to_not_registered"] == 422
     end
 
     test "a non-JSON error body still answers an error" do

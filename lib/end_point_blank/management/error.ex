@@ -89,7 +89,8 @@ defmodule EndPointBlank.Management.Error do
     "endpoint_not_found" => 422,
     "environment_not_in_application" => 422,
     "already_granted" => 422,
-    "grant_revoked_concurrently" => 409
+    "grant_revoked_concurrently" => 409,
+    "return_to_not_registered" => 422
   }
 
   @replay_unavailable_message "The first request with this Idempotency-Key succeeded, but its " <>
