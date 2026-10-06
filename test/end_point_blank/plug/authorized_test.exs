@@ -120,6 +120,25 @@ defmodule EndPointBlank.Plug.AuthorizedTest do
     end
   end
 
+  describe "after the request has been reported" do
+    test "still sends the caller's authorization header as client_auth (sc-1470)", ctx do
+      # The request record leaves the header out; the conn itself must keep it,
+      # or every authorization after RequestWriter ran would go out anonymous.
+      stub(granting())
+
+      conn =
+        Plug.Test.conn("GET", ctx.path)
+        |> Plug.Conn.put_req_header("authorization", "Bearer caller-token")
+
+      EndPointBlank.Writers.RequestWriter.write(conn)
+      assert_receive {:authorize, %{"payload" => [payload]}}
+      refute Map.has_key?(payload["headers"], "authorization")
+
+      refute Authorized.call(conn, Authorized.init([])).halted
+      assert_receive {:authorize, %{"client_auth" => "Bearer caller-token"}}
+    end
+  end
+
   describe "the path it authorizes" do
     test "is the route pattern when a Phoenix router is on the conn", ctx do
       # Intake matches on the registered pattern; sending `/books/17` would look

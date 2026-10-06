@@ -11,7 +11,7 @@ defmodule EndPointBlank.Writers.ResponseWriter do
       env: config.environment,
       uuid: RequestStore.get_uuid(),
       status: conn.status,
-      headers: Map.new(conn.resp_headers),
+      headers: Writers.reportable_headers(conn.resp_headers),
       body: truncate(conn.resp_body),
       sent_at: utc_now(),
       route: conn.private[:epb_route] || conn.request_path,
