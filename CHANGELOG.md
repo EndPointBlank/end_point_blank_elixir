@@ -5,16 +5,22 @@
 ### Security
 
 - **Request and response records no longer carry credentials or cookies
-  (sc-1470).** `RequestWriter` copied every request header into the record
-  it sends to EndPointBlank, so unless you had written a masking rule for it,
-  a caller's `authorization` header (Basic `client_id:secret` or a bearer
-  token) landed in your request log there. `RequestWriter` now drops
-  `authorization`, `proxy-authorization` and `cookie`, and `ResponseWriter`
-  drops `set-cookie`, in any letter case, before masking runs: they are not
-  sent at all. The list is `EndPointBlank.Writers.sensitive_headers/0`. A
-  masking rule that targeted one of these headers now has nothing to match
-  and can be removed. Records sent by earlier versions may hold these values;
-  rotate any client secret a caller sent while it was in use.
+  (sc-1470).** `RequestWriter` copied every request header into the record it
+  sends to EndPointBlank, so unless you had written a masking rule for it, a
+  caller's `authorization` header (Basic `client_id:secret` or a bearer token)
+  landed in your request log there. `RequestWriter` now drops `authorization`,
+  `proxy-authorization` and `cookie`, and `ResponseWriter` drops `set-cookie`,
+  in any letter case, before masking runs, so they are not in the payload the
+  rules and hook receive, and they are not sent at all. The list is
+  `EndPointBlank.Writers.sensitive_headers/0`. A masking rule that targeted
+  one of these headers now has nothing to match and can be removed. Records
+  sent by earlier versions may hold these values; rotate any client secret a
+  caller sent while it was in use.
+
+### Upgrading
+
+- A `mask_hook` that reads `authorization`, `proxy-authorization`, `cookie` or
+  `set-cookie` from `headers` now finds it absent; guard the lookup.
 
 ## 0.11.0
 

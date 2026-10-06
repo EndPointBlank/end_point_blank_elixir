@@ -24,6 +24,10 @@ defmodule EndPointBlank.Writers.SensitiveHeadersTest do
            }
   end
 
+  test "keeps a header whose name is not a binary rather than raising" do
+    assert Writers.reportable_headers([{:authorization, "x"}]) == %{authorization: "x"}
+  end
+
   test "answers an empty map for no headers" do
     assert Writers.reportable_headers([]) == %{}
   end

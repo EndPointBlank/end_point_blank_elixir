@@ -25,7 +25,9 @@ defmodule EndPointBlank.Writers do
   """
   def reportable_headers(headers) do
     headers
-    |> Enum.reject(fn {name, _value} -> String.downcase(name) in @sensitive_headers end)
+    |> Enum.reject(fn {name, _value} ->
+      is_binary(name) and String.downcase(name) in @sensitive_headers
+    end)
     |> Map.new()
   end
 end
