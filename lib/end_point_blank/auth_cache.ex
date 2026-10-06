@@ -91,12 +91,16 @@ defmodule EndPointBlank.AuthCache do
   fixed `written_at` avoids that clamp trap.
 
   A row left behind by a pre-sc-755 release (<= 0.7.0, three elements:
-  `{key, source_env_id, expires_at}`, no `written_at`) can still be
+  `{key, value, expires_at}`, no `written_at`) can still be
   resident after a hot code upgrade that does not drop the ETS table.
   `get/1` treats such a row as a miss and deletes it rather than raising.
 
   Cache key: `"epb_auth:{client_auth}:{path}:{method}:{app_name}:{version}"`
-  Value stored: the `source_application_environment_id` from the 201 response.
+  Value stored: whatever `EndPointBlank.Commands.EndpointAuthorize` passes,
+  which since 0.11.0 is `{source_application_environment_id,
+  source_organization_id, deprecation}` from the 201 response. The cache does
+  not look inside it; the command still reads the older shapes (a bare env id,
+  then `{env_id, deprecation}`) a hot upgrade can leave behind.
 
   `get/2` and `put/3` accept an explicit `now` (the same monotonic
   millisecond clock `get/1`/`put/2` pass by default) and are `@doc false`:
@@ -122,7 +126,7 @@ defmodule EndPointBlank.AuthCache do
   @doc """
   Looks up *key* in the cache.
 
-  Returns `{:hit, source_env_id}` only if the entry exists and is still
+  Returns `{:hit, value}` only if the entry exists and is still
   valid against the `cache_ttl` in force *right now* — see the moduledoc
   for the two conditions that must both hold. `:miss` otherwise, which also
   deletes a found-but-stale entry (never a fresh one written concurrently
@@ -142,15 +146,15 @@ defmodule EndPointBlank.AuthCache do
       :miss
     else
       case :ets.lookup(@table, key) do
-        [{^key, source_env_id, written_at, expires_at} = entry] ->
+        [{^key, value, written_at, expires_at} = entry] ->
           if now < expires_at and now - written_at < current_ttl do
-            {:hit, source_env_id}
+            {:hit, value}
           else
             :ets.delete_object(@table, entry)
             :miss
           end
 
-        [{^key, _source_env_id, _expires_at} = legacy_entry] ->
+        [{^key, _value, _expires_at} = legacy_entry] ->
           # A row written by a pre-sc-755 (<= 0.7.0) release: a 3-tuple
           # with no written_at. The ETS table survives a hot code upgrade
           # (only a process restart drops it), and the 4-tuple clause
@@ -168,11 +172,14 @@ defmodule EndPointBlank.AuthCache do
     end
   end
 
-  @doc "Stores a successful auth result (source_env_id may be nil) under *key*."
-  def put(key, source_env_id), do: put(key, source_env_id, System.monotonic_time(:millisecond))
+  @doc """
+  Stores *value*, a successful auth result, under *key*. The value is opaque
+  here: the cache never looks inside it, and any part of it may be nil.
+  """
+  def put(key, value), do: put(key, value, System.monotonic_time(:millisecond))
 
   @doc false
-  def put(key, source_env_id, now) do
+  def put(key, value, now) do
     case ttl_ms() do
       ttl when ttl <= 0 ->
         clear()
@@ -180,7 +187,7 @@ defmodule EndPointBlank.AuthCache do
 
       ttl ->
         expires_at = now + ttl
-        GenServer.cast(__MODULE__, {:put, key, source_env_id, now, expires_at})
+        GenServer.cast(__MODULE__, {:put, key, value, now, expires_at})
     end
   end
 
@@ -214,7 +221,7 @@ defmodule EndPointBlank.AuthCache do
   end
 
   @impl true
-  def handle_cast({:put, key, source_env_id, written_at, expires_at}, state) do
+  def handle_cast({:put, key, value, written_at, expires_at}, state) do
     # put/2 decides whether to write based on the TTL in force when it is
     # called, then hands this GenServer an already-computed written_at /
     # expires_at pair. If the cache is disabled by the time this message is
@@ -267,7 +274,7 @@ defmodule EndPointBlank.AuthCache do
         if oldest, do: :ets.delete(@table, elem(oldest, 0))
       end
 
-      :ets.insert(@table, {key, source_env_id, written_at, expires_at})
+      :ets.insert(@table, {key, value, written_at, expires_at})
       {:noreply, state}
     end
   end

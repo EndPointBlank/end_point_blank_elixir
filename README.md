@@ -10,20 +10,20 @@ repository:
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, "~> 0.10.0"}
+    {:end_point_blank_elixir, "~> 0.11.0"}
   ]
 end
 ```
 
-Pin to the patch level (`~> 0.10.0`, not `~> 0.10`): before 1.0, breaking
-changes ship in minor releases, so `~> 0.10` would accept a future 0.11.0.
+Pin to the patch level (`~> 0.11.0`, not `~> 0.11`): before 1.0, breaking
+changes ship in minor releases, so `~> 0.11` would accept a future 0.12.0.
 
 Or depend on a release tag of the git repo directly:
 
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.10.1"}
+    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.11.0"}
   ]
 end
 ```
@@ -699,7 +699,14 @@ whose `Applications`, `ApplicationEnvironments`, `Environments` and
 `Credentials` calls act on that organization (`/api/v1/clients/:client_id/...`).
 
 ```elixir
-{:ok, managed} = Clients.create(mgmt, %{name: "Customer Co", managed: true})
+# `owner_email` (optional) names the person at your customer who will own it;
+# change it later with `Clients.update/3`.
+{:ok, managed} =
+  Clients.create(mgmt, %{
+    name: "Customer Co",
+    managed: true,
+    owner_email: "owner@customer.example"
+  })
 customer = Management.for_managed_client(mgmt, managed["id"])
 
 # An environment needs a name and a domain; an application needs a base URL in

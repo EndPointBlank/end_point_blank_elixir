@@ -49,12 +49,25 @@ defmodule EndPointBlank.Management.Clients do
     * `managed` -- `true` creates the client's organization now, for you to
       run until your customer claims it. Not together with `packages` or
       `grants` (`"invalid_managed"`): assign those afterwards.
+    * `owner_email` -- with `managed: true`, the email address of the person
+      at your customer who will own the managed client. Change it later with
+      `update/3`.
 
   Options: `idempotency_key:`.
   """
   @spec create(Management.t(), map() | keyword(), keyword()) :: Management.result(map())
   def create(%Management{} = client, attrs, opts \\ []),
     do: client |> Request.post(:organization, ["clients"], attrs, opts) |> Request.data()
+
+  @doc """
+  Updates client `id` (`PATCH /api/v1/clients/:id`). `attrs`:
+
+    * `owner_email` -- the email address of the person at your customer who
+      will own a managed client.
+  """
+  @spec update(Management.t(), String.t(), map() | keyword()) :: Management.result(map())
+  def update(%Management{} = client, id, attrs),
+    do: client |> Request.patch(:organization, ["clients", id], attrs) |> Request.data()
 
   @doc """
   Removes a client: `%{"id", "deleted" => true}`. With your last accepted

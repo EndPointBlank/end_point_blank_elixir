@@ -106,6 +106,20 @@ defmodule EndPointBlank.Plug.ReportInteractionTest do
 
       assert RequestStore.get_uuid() == nil
       assert RequestStore.get_source_env_id() == nil
+      assert RequestStore.get_source_organization_id() == nil
+    end
+
+    test "is emptied when a request arrives, before anything reads it" do
+      # An earlier request in this process whose before_send never ran must
+      # not lend its caller to this one.
+      RequestStore.put_source_env_id("app-env-stale")
+      RequestStore.put_source_organization_id("org-stale")
+
+      ReportInteraction.call(Plug.Test.conn("GET", "/books"), [])
+
+      assert RequestStore.get_source_env_id() == nil
+      assert RequestStore.get_source_organization_id() == nil
+      assert is_binary(RequestStore.get_uuid())
     end
   end
 
