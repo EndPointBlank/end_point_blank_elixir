@@ -23,7 +23,7 @@ Or depend on a release tag of the git repo directly:
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.11.0"}
+    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.11.1"}
   ]
 end
 ```
@@ -594,6 +594,13 @@ Stacktraces and log messages are never masked.
 
 A bad regex or an unparseable path makes that rule a no-op rather than raising — masking never
 breaks the request it's protecting.
+
+**Credential and cookie headers are never sent.** Before any rule runs,
+`RequestWriter` drops `authorization`, `proxy-authorization` and `cookie`
+from the request record, and `ResponseWriter` drops `set-cookie` from the
+response record, whatever their letter case. They are left out of the record,
+not masked, so no rule or `mask_hook` is needed for them and none can bring
+them back. The list is `EndPointBlank.Writers.sensitive_headers/0`.
 
 ## Management API
 

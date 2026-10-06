@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.11.1
+
+### Security
+
+- **Request and response records no longer carry credentials or cookies
+  (sc-1470).** `RequestWriter` copied every request header into the record
+  it sends to EndPointBlank, so unless you had written a masking rule for it,
+  a caller's `authorization` header (Basic `client_id:secret` or a bearer
+  token) landed in your request log there. `RequestWriter` now drops
+  `authorization`, `proxy-authorization` and `cookie`, and `ResponseWriter`
+  drops `set-cookie`, in any letter case, before masking runs: they are not
+  sent at all. The list is `EndPointBlank.Writers.sensitive_headers/0`. A
+  masking rule that targeted one of these headers now has nothing to match
+  and can be removed. Records sent by earlier versions may hold these values;
+  rotate any client secret a caller sent while it was in use.
+
 ## 0.11.0
 
 ### Added

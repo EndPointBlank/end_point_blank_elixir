@@ -71,6 +71,49 @@ defmodule EndPointBlank.Writers.RequestWriterTest do
     assert payload["headers"]["x-request-id"] == "abc"
   end
 
+  test "never sends the caller's credentials or cookie (sc-1470)" do
+    # No masking rule is configured: the caller's secret must still not reach the
+    # provider's request log.
+    %{payload: payload} =
+      Plug.Test.conn("GET", "/books")
+      |> Plug.Conn.put_req_header("authorization", "Basic Y2xpZW50OnNlY3JldA==")
+      |> Plug.Conn.put_req_header("proxy-authorization", "Bearer proxy-token")
+      |> Plug.Conn.put_req_header("cookie", "session=abc")
+      |> Plug.Conn.put_req_header("x-request-id", "abc")
+      |> write()
+
+    assert payload["headers"] == %{"x-request-id" => "abc"}
+  end
+
+  test "drops a credential header whatever its letter case" do
+    # Plug lower-cases what an adapter hands it, but a conn built by hand need not.
+    %{payload: payload} =
+      Plug.Test.conn("GET", "/books")
+      |> put_raw_header("Authorization", "Bearer token")
+      |> put_raw_header("COOKIE", "session=abc")
+      |> write()
+
+    assert payload["headers"] == %{}
+  end
+
+  test "drops the credential headers before a mask hook sees them" do
+    test_pid = self()
+
+    Config.update(
+      mask_hook: fn payload, _record_type ->
+        send(test_pid, {:hook_saw, payload.headers})
+        payload
+      end
+    )
+
+    Plug.Test.conn("GET", "/books")
+    |> Plug.Conn.put_req_header("authorization", "Bearer token")
+    |> write()
+
+    assert_received {:hook_saw, %{} = headers}
+    refute Map.has_key?(headers, "authorization")
+  end
+
   test "sends the parsed body as JSON" do
     conn = %{Plug.Test.conn("POST", "/books") | body_params: %{"title" => "Dune"}}
 

@@ -94,6 +94,24 @@ defmodule EndPointBlank.Writers.ResponseWriterTest do
     assert payload["source_application_environment_id"] == "app-env-1"
   end
 
+  test "never sends set-cookie, whatever its letter case (sc-1470)" do
+    capture_payload()
+
+    conn =
+      Plug.Test.conn("GET", "/x")
+      |> Plug.Conn.put_resp_header("x-trace", "abc")
+      |> Plug.Conn.put_resp_header("set-cookie", "session=abc; HttpOnly")
+      |> Plug.Conn.resp(200, "")
+
+    conn = %{conn | resp_headers: [{"Set-Cookie", "other=def"} | conn.resp_headers]}
+
+    ResponseWriter.write(conn)
+
+    assert_receive {:captured_payload, payload}
+    assert payload["headers"]["x-trace"] == "abc"
+    refute Enum.any?(Map.keys(payload["headers"]), &(String.downcase(&1) == "set-cookie"))
+  end
+
   describe "the response body" do
     test "is sent as-is for an ordinary binary body" do
       capture_payload()

@@ -11,7 +11,7 @@ defmodule EndPointBlank.Writers.RequestWriter do
         app_name: config.app_name,
         env: config.environment,
         uuid: RequestStore.get_uuid(),
-        headers: Map.new(conn.req_headers),
+        headers: Writers.reportable_headers(conn.req_headers),
         path: conn.request_path,
         http_method: conn.method,
         endpoint_version: VersionFinder.find(conn),
