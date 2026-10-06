@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+
+- **Managed clients carry an `owner_email` (sc-1567).**
+  `Clients.create/3` with `managed: true` documents and passes through
+  `owner_email`, the person at your customer who will own the managed client,
+  and the new `Clients.update/3` (`PATCH /api/v1/clients/:id`) changes it.
+
 ## 0.10.1
 
 ### Added

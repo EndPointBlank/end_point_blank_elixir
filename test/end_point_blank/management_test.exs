@@ -372,6 +372,42 @@ defmodule EndPointBlank.ManagementTest do
 
       assert %{body: %{"name" => "Customer", "managed" => true}} = next_request()
     end
+
+    test "create/3 with managed: true passes owner_email through" do
+      mgmt = client([one(%{"id" => "c3", "managed" => true}, 201)])
+
+      assert {:ok, %{"managed" => true}} =
+               Clients.create(mgmt, %{
+                 name: "Customer",
+                 managed: true,
+                 owner_email: "owner@customer.test"
+               })
+
+      assert %{method: "POST", path: "/api/v1/clients", body: body} = next_request()
+
+      assert body == %{
+               "name" => "Customer",
+               "managed" => true,
+               "owner_email" => "owner@customer.test"
+             }
+    end
+
+    test "update/3 sends owner_email" do
+      mgmt = client([one(%{"id" => "c3", "managed" => true})])
+
+      assert {:ok, %{"id" => "c3"}} =
+               Clients.update(mgmt, "c3", %{owner_email: "new-owner@customer.test"})
+
+      assert %{method: "PATCH", path: "/api/v1/clients/c3", body: body} = next_request()
+      assert body == %{"owner_email" => "new-owner@customer.test"}
+    end
+
+    test "update/3 takes a keyword list" do
+      mgmt = client([one(%{"id" => "c3"})])
+
+      assert {:ok, _} = Clients.update(mgmt, "c3", owner_email: "owner@customer.test")
+      assert %{method: "PATCH", body: %{"owner_email" => "owner@customer.test"}} = next_request()
+    end
   end
 
   describe "ClientPackages" do
