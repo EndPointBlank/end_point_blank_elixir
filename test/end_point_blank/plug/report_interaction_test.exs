@@ -106,6 +106,7 @@ defmodule EndPointBlank.Plug.ReportInteractionTest do
 
       assert RequestStore.get_uuid() == nil
       assert RequestStore.get_source_env_id() == nil
+      assert RequestStore.get_source_organization_id() == nil
     end
   end
 

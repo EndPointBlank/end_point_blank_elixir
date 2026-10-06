@@ -11,6 +11,7 @@ defmodule EndPointBlank.RequestStore do
 
   @uuid_key :epb_uuid
   @source_env_id_key :epb_source_env_id
+  @source_organization_id_key :epb_source_organization_id
   @conn_key :epb_conn
 
   def put_uuid(uuid), do: Process.put(@uuid_key, uuid)
@@ -22,10 +23,19 @@ defmodule EndPointBlank.RequestStore do
   def put_source_env_id(id), do: Process.put(@source_env_id_key, id)
   def get_source_env_id, do: Process.get(@source_env_id_key)
 
+  @doc """
+  The calling organization's EndPointBlank id, from intake's `/authorize`
+  answer (`data[0].source_organization_id`, sc-1571). nil when intake is older
+  than that field or the organization has no id there.
+  """
+  def get_source_organization_id, do: Process.get(@source_organization_id_key)
+  def put_source_organization_id(id), do: Process.put(@source_organization_id_key, id)
+
   def clear do
     Process.delete(@uuid_key)
     Process.delete(@conn_key)
     Process.delete(@source_env_id_key)
+    Process.delete(@source_organization_id_key)
   end
 
   @doc "Generates a random UUID v4 string."

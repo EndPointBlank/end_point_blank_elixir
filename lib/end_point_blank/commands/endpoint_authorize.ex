@@ -26,7 +26,8 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
   network call entirely and return immediately.
 
   Returns `{:ok, conn}` on success (HTTP 201), with the
-  `source_application_environment_id` stored in `RequestStore`.
+  `source_application_environment_id` and `source_organization_id` stored in
+  `RequestStore`.
   Returns `{:error, reason}` otherwise.
   """
   def authorize(%Plug.Conn{} = conn, path \\ nil, version \\ nil) do
@@ -43,17 +44,23 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
     cache_key = "epb_auth:#{client_auth}:#{path}:#{conn.method}:#{config.app_name}:#{version}"
 
     case AuthCache.get(cache_key) do
-      {:hit, {source_env_id, deprecation}} ->
-        # The cache carries the deprecation as well as the env id. Authorization
-        # is cached per client+route, so caching only the env id would limit the
-        # Deprecation and Sunset headers to cache misses — roughly one request
+      {:hit, {source_env_id, source_organization_id, deprecation}} ->
+        # The cache carries the deprecation and the calling organization as
+        # well as the env id. Authorization is cached per client+route, so
+        # caching only the env id would limit the Deprecation and Sunset
+        # headers, and the organization, to cache misses — roughly one request
         # in N, which reads as a flaky feature rather than a missing one.
-        RequestStore.put_source_env_id(source_env_id)
+        put_source(source_env_id, source_organization_id)
+        {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
+
+      {:hit, {source_env_id, deprecation}} ->
+        # An entry cached before 0.11.0, with no organization id.
+        put_source(source_env_id, nil)
         {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
 
       {:hit, source_env_id} ->
-        # An entry cached before this release, holding only the env id.
-        RequestStore.put_source_env_id(source_env_id)
+        # An entry cached before the deprecation was, holding only the env id.
+        put_source(source_env_id, nil)
         {:ok, conn}
 
       :miss ->
@@ -104,8 +111,10 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
             _ -> nil
           end
 
-        AuthCache.put(cache_key, {source_env_id, deprecation})
-        RequestStore.put_source_env_id(source_env_id)
+        source_organization_id = source_organization_id(resp_body)
+
+        AuthCache.put(cache_key, {source_env_id, source_organization_id, deprecation})
+        put_source(source_env_id, source_organization_id)
         {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
 
       {:ok, %Req.Response{status: s, body: b}} ->
@@ -141,6 +150,20 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
 
     nil
   end
+
+  defp put_source(source_env_id, source_organization_id) do
+    RequestStore.put_source_env_id(source_env_id)
+    RequestStore.put_source_organization_id(source_organization_id)
+  end
+
+  # sc-1571: the calling organization's EndPointBlank id. An intake older than
+  # the field does not send it, and an organization with no id there gets
+  # null; both are nil here, silently, since neither is a broken contract.
+  defp source_organization_id(%{"data" => [%{"source_organization_id" => id} | _]})
+       when is_binary(id),
+       do: id
+
+  defp source_organization_id(_body), do: nil
 
   defp remote_ip(%{remote_ip: ip}) when is_tuple(ip) do
     ip |> Tuple.to_list() |> Enum.join(".")

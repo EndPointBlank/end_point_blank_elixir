@@ -96,7 +96,11 @@ defmodule EndPointBlank.AuthCache do
   `get/1` treats such a row as a miss and deletes it rather than raising.
 
   Cache key: `"epb_auth:{client_auth}:{path}:{method}:{app_name}:{version}"`
-  Value stored: the `source_application_environment_id` from the 201 response.
+  Value stored: whatever `EndPointBlank.Commands.EndpointAuthorize` passes,
+  which since 0.11.0 is `{source_application_environment_id,
+  source_organization_id, deprecation}` from the 201 response. The cache does
+  not look inside it; the command still reads the older shapes (a bare env id,
+  then `{env_id, deprecation}`) a hot upgrade can leave behind.
 
   `get/2` and `put/3` accept an explicit `now` (the same monotonic
   millisecond clock `get/1`/`put/2` pass by default) and are `@doc false`:

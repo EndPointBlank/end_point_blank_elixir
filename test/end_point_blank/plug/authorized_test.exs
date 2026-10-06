@@ -61,6 +61,7 @@ defmodule EndPointBlank.Plug.AuthorizedTest do
             "id" => "gen-1",
             "source_application_environment_id" => "app-env-1",
             "target_application_environment_id" => "tgt-env",
+            "source_organization_id" => "org-1",
             "inserted_at" => "2026-01-01T00:00:00Z"
           }
         ]
@@ -100,6 +101,14 @@ defmodule EndPointBlank.Plug.AuthorizedTest do
       call(ctx)
 
       assert RequestStore.get_source_env_id() == "app-env-1"
+    end
+
+    test "records the calling organization beside it (sc-1571)", ctx do
+      stub(granting())
+
+      call(ctx)
+
+      assert RequestStore.get_source_organization_id() == "org-1"
     end
 
     test "sets the deprecation headers the authorization came with", ctx do

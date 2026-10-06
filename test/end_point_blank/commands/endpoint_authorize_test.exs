@@ -85,19 +85,30 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
   # Every 201 here is built from this. This file stubbed an invented
   # `%{"accesses" => ...}` body from its first commit, so the SDK read a key
   # intake has never sent and still passed its own suite (sc-463).
+  #
+  # `source_organization_id: :absent` answers as an intake older than sc-1571,
+  # which does not send the key at all.
   defp intake_authorize_body(opts \\ []) do
     env_id = Keyword.get(opts, :source_env_id, "app-env-1")
+    organization_id = Keyword.get(opts, :source_organization_id, "org-1")
+
+    access =
+      %{
+        "id" => "gen-1",
+        "source_application_environment_id" => env_id,
+        "target_application_environment_id" => "tgt-env",
+        "inserted_at" => "2026-01-01T00:00:00Z"
+      }
+      |> then(fn access ->
+        case organization_id do
+          :absent -> access
+          id -> Map.put(access, "source_organization_id", id)
+        end
+      end)
 
     %{
       "authorized" => true,
-      "data" => [
-        %{
-          "id" => "gen-1",
-          "source_application_environment_id" => env_id,
-          "target_application_environment_id" => "tgt-env",
-          "inserted_at" => "2026-01-01T00:00:00Z"
-        }
-      ]
+      "data" => [access]
     }
     |> then(fn body ->
       case Keyword.fetch(opts, :deprecation) do
@@ -267,6 +278,47 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
     end
   end
 
+  # sc-1571: intake names the calling organization by its EndPointBlank id.
+  describe "the calling organization" do
+    test "is recorded beside the source environment id", ctx do
+      stub_intake(%{@authorize_path => authorized(source_organization_id: "org-42")})
+
+      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      assert RequestStore.get_source_organization_id() == "org-42"
+      assert RequestStore.get_source_env_id() == "app-env-1"
+    end
+
+    test "is nil, quietly, when intake is older than the field", ctx do
+      # An older intake is not a broken contract, so nothing is logged: the
+      # error log is kept for the env id, whose absence is one.
+      stub_intake(%{@authorize_path => authorized(source_organization_id: :absent)})
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+        end)
+
+      assert RequestStore.get_source_organization_id() == nil
+      assert RequestStore.get_source_env_id() == "app-env-1"
+      refute log =~ "source_organization_id"
+    end
+
+    test "is nil when intake answers null for an organization with no id", ctx do
+      stub_intake(%{@authorize_path => authorized(source_organization_id: nil)})
+
+      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      assert RequestStore.get_source_organization_id() == nil
+    end
+
+    test "is not recorded when the authorization fails", ctx do
+      stub_intake(%{@authorize_path => unreachable()})
+
+      capture_log(fn -> EndpointAuthorize.authorize(conn(ctx)) end)
+
+      assert RequestStore.get_source_organization_id() == nil
+    end
+  end
+
   describe "deprecation reported with the authorization" do
     test "sets Deprecation and Sunset on the response", ctx do
       deprecation = %{
@@ -318,6 +370,39 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
 
       assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
       assert RequestStore.get_source_env_id() == "app-env-cached"
+    end
+
+    test "a cache hit still records the calling organization", ctx do
+      # Cached per client and route like the deprecation, so an organization
+      # carried only on the miss would be there on roughly one request in N.
+      stub_intake(%{@authorize_path => authorized(source_organization_id: "org-cached")})
+
+      EndpointAuthorize.authorize(conn(ctx))
+      sync_cache()
+      _primed = authorize_calls()
+      RequestStore.clear()
+
+      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      assert authorize_calls() == []
+      assert RequestStore.get_source_organization_id() == "org-cached"
+    end
+
+    test "an entry cached before the organization was still authorizes", ctx do
+      # 0.10.x cached `{env_id, deprecation}`. After a hot upgrade such an entry
+      # is still in the table; it answers with its env id and deprecation, and
+      # no organization, rather than as a malformed hit.
+      stub_intake(%{@authorize_path => authorized()})
+      RequestStore.put_source_organization_id("org-stale")
+
+      key = "epb_auth::#{ctx.path}:GET:test-app:"
+      AuthCache.put(key, {"app-env-0.10", %{"deprecated_at" => "2026-01-01T00:00:00Z"}})
+      sync_cache()
+
+      assert {:ok, out} = EndpointAuthorize.authorize(conn(ctx))
+      assert authorize_calls() == []
+      assert RequestStore.get_source_env_id() == "app-env-0.10"
+      assert RequestStore.get_source_organization_id() == nil
+      assert Plug.Conn.get_resp_header(out, "deprecation") == ["@1767225600"]
     end
 
     test "a cache hit still sets the deprecation headers", ctx do

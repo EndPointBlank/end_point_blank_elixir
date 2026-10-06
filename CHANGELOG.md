@@ -8,6 +8,11 @@
   `Clients.create/3` with `managed: true` documents and passes through
   `owner_email`, the person at your customer who will own the managed client,
   and the new `Clients.update/3` (`PATCH /api/v1/clients/:id`) changes it.
+- **The calling organization's id is kept from `/authorize` (sc-1571).**
+  `RequestStore.get_source_organization_id/0` returns
+  `data[0].source_organization_id`, the caller's EndPointBlank organization
+  id, cached with the source environment id so a cache hit has it too. nil
+  when intake is older than the field or the organization has no id.
 
 ## 0.10.1
 
