@@ -311,11 +311,16 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
     end
 
     test "is not recorded when the authorization fails", ctx do
+      # A value left by an earlier request in this process must not survive a
+      # failed authorization and name the wrong caller.
+      RequestStore.put_source_env_id("app-env-stale")
+      RequestStore.put_source_organization_id("org-stale")
       stub_intake(%{@authorize_path => unreachable()})
 
       capture_log(fn -> EndpointAuthorize.authorize(conn(ctx)) end)
 
       assert RequestStore.get_source_organization_id() == nil
+      assert RequestStore.get_source_env_id() == nil
     end
   end
 

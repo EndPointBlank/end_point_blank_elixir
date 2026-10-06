@@ -31,6 +31,12 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
   Returns `{:error, reason}` otherwise.
   """
   def authorize(%Plug.Conn{} = conn, path \\ nil, version \\ nil) do
+    # A process that serves more than one request (a keep-alive connection,
+    # a host that reuses workers) must not carry the last caller's identity
+    # into this one: a refused or failed authorization leaves both unset
+    # rather than naming whoever was authorized before.
+    put_source(nil, nil)
+
     config = Config.get()
     path = path || conn.request_path
     version = version || VersionFinder.find(conn)

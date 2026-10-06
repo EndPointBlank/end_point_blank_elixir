@@ -22,6 +22,11 @@ defmodule EndPointBlank.Plug.ReportInteraction do
 
   @impl Plug
   def call(conn, _opts) do
+    # Start from nothing: a process that served an earlier request whose
+    # before_send never ran (a halt without a response, a crash the rescue
+    # below did not see) must not lend that request's caller to this one.
+    RequestStore.clear()
+
     conn = fetch_query_params(conn)
 
     uuid = RequestStore.generate_uuid()

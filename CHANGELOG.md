@@ -12,7 +12,25 @@
   `RequestStore.get_source_organization_id/0` returns
   `data[0].source_organization_id`, the caller's EndPointBlank organization
   id, cached with the source environment id so a cache hit has it too. nil
-  when intake is older than the field or the organization has no id.
+  when intake is older than the field or the organization has no id. That
+  nil is cached like the id would be: after intake starts sending the field,
+  a cached client and route keeps answering nil until its entry expires
+  (`cache_ttl`, 300 s by default).
+
+### Fixed
+
+- **A failed authorization no longer leaves an earlier caller in the
+  `RequestStore`.** `EndpointAuthorize.authorize/3` clears the source
+  environment and organization ids before it asks, and
+  `Plug.ReportInteraction` clears the store when a request arrives, so a
+  process that serves more than one request cannot name the previous caller.
+
+### Upgrading
+
+- **Downgrading to 0.10.x with the cache still warm needs a restart or
+  `EndPointBlank.AuthCache.clear/0` on every node.** 0.11.0 caches a
+  three-element value that 0.10.x would read as a bare environment id. A hot
+  downgrade keeps the ETS table, so restart each node or call `clear/0` on it.
 
 ## 0.10.1
 
