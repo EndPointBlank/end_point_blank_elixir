@@ -96,6 +96,20 @@ defmodule EndPointBlank.Writers.RequestWriterTest do
     assert payload["headers"] == %{}
   end
 
+  test "drops every cookie header when the request carries more than one" do
+    conn = Plug.Test.conn("GET", "/books")
+
+    conn = %{
+      conn
+      | req_headers: [{"cookie", "a=1"}, {"cookie", "b=2"}, {"x-keep", "yes"} | conn.req_headers]
+    }
+
+    %{payload: payload} = write(conn)
+
+    refute Map.has_key?(payload["headers"], "cookie")
+    assert payload["headers"]["x-keep"] == "yes"
+  end
+
   test "drops the credential headers before a mask hook sees them" do
     test_pid = self()
 
