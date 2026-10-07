@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+
+- **`ManagedClients.create_portal_session/3` signs a managed client's owner in
+  to its EndPointBlank portal (sc-1574).** It calls
+  `POST /api/v1/clients/:client_id/portal_sessions` and answers
+  `%{"client_id", "url", "expires_at", "return_url"}`: a single-use link that
+  expires 60 seconds after it is minted, so mint it when the user clicks and
+  redirect their browser to it. `return_url:` (optional) must equal one of
+  your organization's claim return URLs. Refused with 404 for a client that
+  is not yours, and 422 (`client_not_managed`, `client_being_removed`,
+  `owner_email_missing`, `return_url_not_registered`) for one that is not an
+  unclaimed managed client open to claims with an owner email. The answer is
+  never replayed: each call sends a new Idempotency-Key, and a reused one
+  answers 409 `idempotency_replay_unavailable`.
+- `Error.known_codes/0` lists the API codes it was missing:
+  `already_invited`, `invite_accepted`, `invite_not_open`,
+  `invite_rate_limited`, `not_an_email_invite`, `client_being_removed`,
+  `client_not_removable`, `return_url_not_registered` and
+  `owner_email_missing`.
+
 ## 0.11.1
 
 ### Security
