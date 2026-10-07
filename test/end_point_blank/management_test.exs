@@ -653,7 +653,13 @@ defmodule EndPointBlank.ManagementTest do
     end
 
     test "create_portal_session/3" do
-      session = %{"url" => "https://portal.test/s/abc", "expires_at" => "2026-10-07T12:01:00Z"}
+      session = %{
+        "client_id" => "c1",
+        "url" => "https://portal.test/managed/sessions/abc",
+        "expires_at" => "2026-10-07T12:01:00Z",
+        "return_url" => nil
+      }
+
       mgmt = client([one(session, 201)])
 
       assert {:ok, ^session} = ManagedClients.create_portal_session(mgmt, "c1")
@@ -667,7 +673,7 @@ defmodule EndPointBlank.ManagementTest do
     end
 
     test "create_portal_session/3 sends return_url when given" do
-      mgmt = client([one(%{"url" => "https://portal.test/s/abc"}, 201)])
+      mgmt = client([one(%{"url" => "https://portal.test/managed/sessions/abc"}, 201)])
       return_url = "https://provider.test/portal/credential/claimed"
 
       assert {:ok, _} = ManagedClients.create_portal_session(mgmt, "c1", return_url: return_url)
@@ -676,11 +682,44 @@ defmodule EndPointBlank.ManagementTest do
       assert body == %{"return_url" => return_url}
     end
 
+    test "create_portal_session/3 sends no body for a nil return_url" do
+      mgmt = client([one(%{"url" => "https://portal.test/managed/sessions/abc"}, 201)])
+
+      assert {:ok, _} = ManagedClients.create_portal_session(mgmt, "c1", return_url: nil)
+
+      assert %{body: nil} = next_request()
+    end
+
+    # The answer is never replayed, so every click needs a key of its own.
+    test "create_portal_session/3 sends a new Idempotency-Key on every call" do
+      session = %{"url" => "https://portal.test/managed/sessions/abc"}
+      mgmt = client([one(session, 201), one(session, 201)])
+
+      assert {:ok, _} = ManagedClients.create_portal_session(mgmt, "c1")
+      assert {:ok, _} = ManagedClients.create_portal_session(mgmt, "c1")
+
+      first = next_request().headers["idempotency-key"]
+      second = next_request().headers["idempotency-key"]
+      assert is_binary(first) and is_binary(second)
+      assert first != second
+    end
+
     test "create_portal_session/3 answers the refusal" do
       mgmt = client([error(422, "client_not_managed")])
 
       assert {:error, %Error{status: 422, code: "client_not_managed"}} =
                ManagedClients.create_portal_session(mgmt, "c1")
+    end
+
+    test "create_portal_session/3 says to create a new session when a key is reused" do
+      mgmt = client([error(409, "idempotency_replay_unavailable", "server text")])
+
+      assert {:error, %Error{status: 409} = error} =
+               ManagedClients.create_portal_session(mgmt, "c1", idempotency_key: "k1")
+
+      assert error.code == "idempotency_replay_unavailable"
+      assert error.message =~ "Do not retry"
+      assert error.message =~ "portal session, create a new one"
     end
 
     test "for_managed_client/2 scopes applications, environments and credentials" do
@@ -1039,6 +1078,11 @@ defmodule EndPointBlank.ManagementTest do
       assert Error.known_code?("plan_limit")
       assert Error.known_codes()["rate_limited"] == 429
       assert Error.known_codes()["return_to_not_registered"] == 422
+
+      # sc-1574: a portal session's refusals.
+      for code <- ~w(client_being_removed owner_email_missing return_url_not_registered) do
+        assert Error.known_codes()[code] == 422
+      end
     end
 
     test "a non-JSON error body still answers an error" do

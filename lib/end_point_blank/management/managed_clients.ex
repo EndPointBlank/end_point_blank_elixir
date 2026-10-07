@@ -52,15 +52,24 @@ defmodule EndPointBlank.Management.ManagedClients do
   Mints a single-use link that signs the owner of managed client `client_id`
   in to its EndPointBlank portal
   (`POST /api/v1/clients/:client_id/portal_sessions`). Answers
-  `%{"url", "expires_at"}`.
+  `%{"client_id", "url", "expires_at", "return_url"}`, `"return_url"` being
+  `nil` when none was given.
 
   The link expires 60 seconds after it is minted and works once, so mint it
   when the user clicks and redirect their browser to it; never render it into
-  a page or send it in an email. Only for an unclaimed managed client of yours
-  that is still open to claims: anything else is refused with 422. Options:
-  `idempotency_key:`, and `return_url:`, a URL registered under your
-  organization's claim return URLs (byte for byte) that the portal links back
-  to; any other URL is refused.
+  a page, log it or send it in an email. Options: `return_url:`, a URL
+  registered under your organization's claim return URLs (byte for byte) that
+  the portal links back to, and `idempotency_key:`.
+
+  Each call sends a new Idempotency-Key unless you pass one, and that is what
+  you want: the answer is never replayed, so a key used before answers 409
+  `"idempotency_replay_unavailable"`. Never reuse a key across clicks.
+
+  Refused with 404 `"not_found"` for a client that is not yours, and with
+  422 `"client_not_managed"` (not a managed client, or already claimed),
+  `"client_being_removed"`, `"owner_email_missing"` (set one with
+  `Clients.update/3`) or `"return_url_not_registered"` (an empty string
+  included).
   """
   @spec create_portal_session(Management.t(), String.t(), keyword()) ::
           Management.result(map())

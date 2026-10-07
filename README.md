@@ -744,7 +744,8 @@ customer = Management.for_managed_client(mgmt, managed["id"])
 
 # Until they claim it, send its owner into its EndPointBlank portal from your
 # app: mint a link when they click and redirect their browser to it. The link
-# works once and expires after 60 seconds, so never render it into a page.
+# works once and expires after 60 seconds, so never render it into a page, and
+# mint a new one (with a new Idempotency-Key, the default) on every click.
 # `return_url:` (optional) must be one of your claim return URLs too.
 {:ok, %{"url" => url}} =
   Management.ManagedClients.create_portal_session(mgmt, managed["id"],

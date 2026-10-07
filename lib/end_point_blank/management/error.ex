@@ -80,6 +80,13 @@ defmodule EndPointBlank.Management.Error do
     "client_accepted" => 422,
     "client_not_managed" => 422,
     "already_a_member" => 422,
+    "already_invited" => 409,
+    "invite_accepted" => 422,
+    "invite_not_open" => 422,
+    "invite_rate_limited" => 429,
+    "not_an_email_invite" => 422,
+    "client_being_removed" => 422,
+    "client_not_removable" => 422,
     "managed_client_has_credentials" => 422,
     "api_package_not_found" => 422,
     "environment_not_found" => 422,
@@ -90,13 +97,16 @@ defmodule EndPointBlank.Management.Error do
     "environment_not_in_application" => 422,
     "already_granted" => 422,
     "grant_revoked_concurrently" => 409,
-    "return_to_not_registered" => 422
+    "return_to_not_registered" => 422,
+    "return_url_not_registered" => 422,
+    "owner_email_missing" => 422
   }
 
   @replay_unavailable_message "The first request with this Idempotency-Key succeeded, but its " <>
                                 "answer held a secret shown only once, so it cannot be " <>
                                 "replayed. Do not retry it: get or list the credential to " <>
-                                "see its current state, and rotate it if the secret was lost."
+                                "see its current state, and rotate it if the secret was lost; " <>
+                                "for a portal session, create a new one with a new key."
 
   @doc """
   The error codes the management API is documented to answer, mapped to their
