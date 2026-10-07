@@ -10,20 +10,20 @@ repository:
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, "~> 0.11.0"}
+    {:end_point_blank_elixir, "~> 0.12.0"}
   ]
 end
 ```
 
-Pin to the patch level (`~> 0.11.0`, not `~> 0.11`): before 1.0, breaking
-changes ship in minor releases, so `~> 0.11` would accept a future 0.12.0.
+Pin to the patch level (`~> 0.12.0`, not `~> 0.12`): before 1.0, breaking
+changes ship in minor releases, so `~> 0.12` would accept a future 0.13.0.
 
 Or depend on a release tag of the git repo directly:
 
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.11.1"}
+    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.12.0"}
   ]
 end
 ```
@@ -740,6 +740,15 @@ customer = Management.for_managed_client(mgmt, managed["id"])
 {:ok, _invite} =
   Management.ManagedClients.claim_invite(mgmt, managed["id"], "owner@customer.example",
     return_to: "https://app.example.com/onboarding/done"
+  )
+
+# Until they claim it, send its owner into its EndPointBlank portal from your
+# app: mint a link when they click and redirect their browser to it. The link
+# works once and expires after 60 seconds, so never render it into a page.
+# `return_url:` (optional) must be one of your claim return URLs too.
+{:ok, %{"url" => url}} =
+  Management.ManagedClients.create_portal_session(mgmt, managed["id"],
+    return_url: "https://app.example.com/onboarding/done"
   )
 ```
 

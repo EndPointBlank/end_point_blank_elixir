@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+
+- **`ManagedClients.create_portal_session/3` signs a managed client's owner in
+  to its EndPointBlank portal (sc-1574).** It calls
+  `POST /api/v1/clients/:client_id/portal_sessions` and answers
+  `%{"url", "expires_at"}`: a single-use link that expires 60 seconds after it
+  is minted, so mint it when the user clicks and redirect their browser to it.
+  `return_url:` (optional) must equal one of your organization's claim return
+  URLs. Refused with 422 for a client that is not an unclaimed managed client
+  of yours, or is closed to claims.
+
 ## 0.11.1
 
 ### Security

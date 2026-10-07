@@ -20,7 +20,8 @@ defmodule EndPointBlank.Management.ManagedClients do
           environment_base_urls: %{env["id"] => "https://billing.staging.customer.example"}
         })
 
-  This module sends the claim invite that hands one over.
+  This module sends the claim invite that hands one over, and mints the
+  portal sign-in link its owner uses until they claim it.
   """
 
   alias EndPointBlank.Management
@@ -44,6 +45,31 @@ defmodule EndPointBlank.Management.ManagedClients do
 
     client
     |> Request.post(:organization, ["clients", client_id, "claim_invites"], body, opts)
+    |> Request.data()
+  end
+
+  @doc """
+  Mints a single-use link that signs the owner of managed client `client_id`
+  in to its EndPointBlank portal
+  (`POST /api/v1/clients/:client_id/portal_sessions`). Answers
+  `%{"url", "expires_at"}`.
+
+  The link expires 60 seconds after it is minted and works once, so mint it
+  when the user clicks and redirect their browser to it; never render it into
+  a page or send it in an email. Only for an unclaimed managed client of yours
+  that is still open to claims: anything else is refused with 422. Options:
+  `idempotency_key:`, and `return_url:`, a URL registered under your
+  organization's claim return URLs (byte for byte) that the portal links back
+  to; any other URL is refused.
+  """
+  @spec create_portal_session(Management.t(), String.t(), keyword()) ::
+          Management.result(map())
+  def create_portal_session(%Management{} = client, client_id, opts \\ []) do
+    {return_url, opts} = Keyword.pop(opts, :return_url)
+    body = if return_url, do: %{return_url: return_url}
+
+    client
+    |> Request.post(:organization, ["clients", client_id, "portal_sessions"], body, opts)
     |> Request.data()
   end
 end
