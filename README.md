@@ -596,9 +596,11 @@ A bad regex or an unparseable path makes that rule a no-op rather than raising â
 breaks the request it's protecting.
 
 **Credential and cookie headers are never sent.** Before any rule runs,
-`RequestWriter` drops `authorization`, `proxy-authorization` and `cookie` from
-the request record, and `ResponseWriter` drops `set-cookie` from the response
-record, whatever their letter case. They are left out of the record, not
+`RequestWriter` and `ResponseWriter` drop these headers from their records,
+whatever their letter case: `authorization`, `proxy-authorization`, `cookie`,
+`set-cookie`, `x-api-key`, `api-key`, `x-auth-token`, `x-access-token`,
+`x-refresh-token`, `x-amz-security-token`, `x-csrf-token`, `x-xsrf-token`,
+`x-goog-api-key` and `ocp-apim-subscription-key`. They are left out of the record, not
 masked: they are not in the payload the rules and hook receive. The list is
 `EndPointBlank.Writers.sensitive_headers/0`.
 
