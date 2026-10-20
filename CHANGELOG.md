@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`source_ip` is sent as a real address (sc-1625).** The SDK joined the
+  `conn.remote_ip` tuple with dots, so an IPv6 caller such as
+  `::ffff:10.40.0.70` reached intake as `0.0.0.0.0.65535.2600.70`. An
+  IPv4-mapped address is now sent as the IPv4 it carries (`10.40.0.70`),
+  other IPv6 addresses in standard form (`2001:db8::1`), and a tuple that is
+  not an IP address is left out.
+
 ## 0.12.0
 
 ### Added
