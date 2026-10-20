@@ -11,12 +11,31 @@ defmodule EndPointBlank.Writers do
   # response record likewise carried `set-cookie`. The writers drop these
   # before masking runs, rather than mask them, so no rule and no mask hook can
   # bring them back.
-  @sensitive_headers ~w(authorization proxy-authorization cookie set-cookie)
+  #
+  # sc-1626 added the other headers that commonly carry an API key or token.
+  # Every SDK and intake's ingest backstop drop this same set; keep them in
+  # step.
+  @sensitive_headers ~w(
+    authorization
+    proxy-authorization
+    cookie
+    set-cookie
+    x-api-key
+    api-key
+    x-auth-token
+    x-access-token
+    x-refresh-token
+    x-amz-security-token
+    x-csrf-token
+    x-xsrf-token
+    x-goog-api-key
+    ocp-apim-subscription-key
+  )
 
   def write(url_key, :direct, payloads), do: DirectWriter.write(url_key, payloads)
   def write(url_key, :delayed, payloads), do: DelayedWriter.write(url_key, payloads)
 
-  @doc "The lower-cased names of the headers a record never carries (sc-1470)."
+  @doc "The lower-cased names of the headers a record never carries (sc-1470, sc-1626)."
   def sensitive_headers, do: @sensitive_headers
 
   @doc """

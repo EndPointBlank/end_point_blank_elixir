@@ -10,6 +10,13 @@
   IPv4-mapped address is now sent as the IPv4 it carries (`10.40.0.70`),
   other IPv6 addresses in standard form (`2001:db8::1`), and a tuple that is
   not an IP address is left out.
+- **API key and token headers are never sent (sc-1626).** Request and
+  response records already left out `authorization`, `proxy-authorization`,
+  `cookie` and `set-cookie` (sc-1470). They now also leave out `x-api-key`,
+  `api-key`, `x-auth-token`, `x-access-token`, `x-refresh-token`,
+  `x-amz-security-token`, `x-csrf-token`, `x-xsrf-token`, `x-goog-api-key` and
+  `ocp-apim-subscription-key`, in any letter case. Every SDK and intake drop
+  the same set.
 
 ## 0.12.0
 
