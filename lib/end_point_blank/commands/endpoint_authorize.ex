@@ -171,8 +171,19 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
 
   defp source_organization_id(_body), do: nil
 
+  # sc-1625: joining the tuple with dots turned an IPv6 address such as
+  # `::ffff:10.40.0.70` into "0.0.0.0.0.65535.2600.70". An IPv4-mapped
+  # address is sent as the plain IPv4 it carries; any other address in its
+  # standard text form.
+  defp remote_ip(%{remote_ip: {0, 0, 0, 0, 0, 0xFFFF, g, h}}) do
+    remote_ip(%{remote_ip: {div(g, 256), rem(g, 256), div(h, 256), rem(h, 256)}})
+  end
+
   defp remote_ip(%{remote_ip: ip}) when is_tuple(ip) do
-    ip |> Tuple.to_list() |> Enum.join(".")
+    case :inet.ntoa(ip) do
+      {:error, _} -> nil
+      text -> to_string(text)
+    end
   end
 
   defp remote_ip(_), do: nil
