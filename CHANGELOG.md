@@ -1,31 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Fixed
-
-- **`source_ip` is sent as a real address (sc-1625).** The SDK joined the
-  `conn.remote_ip` tuple with dots, so an IPv6 caller such as
-  `::ffff:10.40.0.70` reached intake as `0.0.0.0.0.65535.2600.70`. An
-  IPv4-mapped address is now sent as the IPv4 it carries (`10.40.0.70`),
-  other IPv6 addresses in standard form (`2001:db8::1`), and a tuple that is
-  not an IP address is left out.
-- **API key and token headers are never sent (sc-1626).** Request and
-  response records already left out `authorization`, `proxy-authorization`,
-  `cookie` and `set-cookie` (sc-1470). They now also leave out `x-api-key`,
-  `api-key`, `x-auth-token`, `x-access-token`, `x-refresh-token`,
-  `x-amz-security-token`, `x-csrf-token`, `x-xsrf-token`, `x-goog-api-key` and
-  `ocp-apim-subscription-key`, in any letter case. Every SDK and intake drop
-  the same set.
-### Security
-
-- **mint 1.10.2 or later is required (sc-1629).** mint 1.10.0 and 1.10.1
-  carry advisories EEF-CVE-2026-82672, -91043, -92103 and -94194 (HTTP/1
-  response smuggling and HTTP/2 memory exhaustion). The SDK reaches mint only
-  through req and finch, so it now declares `{:mint, "~> 1.10 and >= 1.10.2"}`
-  to make your own lock take a fixed release. Its mix.lock moves to mint
-  1.11.0 and hpax 1.1.0.
-
 ## 0.12.0
 
 ### Added
@@ -47,6 +21,31 @@
   `invite_rate_limited`, `not_an_email_invite`, `client_being_removed`,
   `client_not_removable`, `return_url_not_registered` and
   `owner_email_missing`.
+
+### Fixed
+
+- **`source_ip` is sent as a real address (sc-1625).** The SDK joined the
+  `conn.remote_ip` tuple with dots, so an IPv6 caller such as
+  `::ffff:10.40.0.70` reached intake as `0.0.0.0.0.65535.2600.70`. An
+  IPv4-mapped address is now sent as the IPv4 it carries (`10.40.0.70`),
+  other IPv6 addresses in standard form (`2001:db8::1`), and a tuple that is
+  not an IP address is left out.
+- **API key and token headers are never sent (sc-1626).** Request and
+  response records already left out `authorization`, `proxy-authorization`,
+  `cookie` and `set-cookie` (sc-1470). They now also leave out `x-api-key`,
+  `api-key`, `x-auth-token`, `x-access-token`, `x-refresh-token`,
+  `x-amz-security-token`, `x-csrf-token`, `x-xsrf-token`, `x-goog-api-key` and
+  `ocp-apim-subscription-key`, in any letter case. Every SDK and intake drop
+  the same set.
+
+### Security
+
+- **mint 1.10.2 or later is required (sc-1629).** mint 1.10.0 and 1.10.1
+  carry advisories EEF-CVE-2026-82672, -91043, -92103 and -94194 (HTTP/1
+  response smuggling and HTTP/2 memory exhaustion). The SDK reaches mint only
+  through req and finch, so it now declares `{:mint, "~> 1.10 and >= 1.10.2"}`
+  to make your own lock take a fixed release. Its mix.lock moves to mint
+  1.11.0 and hpax 1.1.0.
 
 ## 0.11.1
 
