@@ -240,6 +240,33 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
       assert call.body["source_ip"] == "203.0.113.7"
     end
 
+    test "sends an IPv4-mapped IPv6 address as the IPv4 it carries (sc-1625)", ctx do
+      stub_intake(%{@authorize_path => authorized()})
+
+      EndpointAuthorize.authorize(%{conn(ctx) | remote_ip: {0, 0, 0, 0, 0, 65_535, 2600, 70}})
+
+      assert [call] = authorize_calls()
+      assert call.body["source_ip"] == "10.40.0.70"
+    end
+
+    test "sends an IPv6 address in its standard text form (sc-1625)", ctx do
+      stub_intake(%{@authorize_path => authorized()})
+
+      EndpointAuthorize.authorize(%{conn(ctx) | remote_ip: {0x2001, 0xDB8, 0, 0, 0, 0, 0, 1}})
+
+      assert [call] = authorize_calls()
+      assert call.body["source_ip"] == "2001:db8::1"
+    end
+
+    test "omits an address tuple that is not a valid IP rather than failing", ctx do
+      stub_intake(%{@authorize_path => authorized()})
+
+      assert {:ok, _} = EndpointAuthorize.authorize(%{conn(ctx) | remote_ip: {1, 2, 3}})
+
+      assert [call] = authorize_calls()
+      assert call.body["source_ip"] == nil
+    end
+
     test "omits the IP rather than failing when the adapter did not supply one", ctx do
       stub_intake(%{@authorize_path => authorized()})
 
