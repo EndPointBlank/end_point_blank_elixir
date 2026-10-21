@@ -50,6 +50,11 @@ defmodule EndPointBlankElixir.MixProject do
   defp deps do
     [
       {:req, "~> 0.5"},
+      # Not called directly: req's HTTP client, via finch. A floor here makes
+      # a consumer's own lock take a mint without the 1.10.0 advisories
+      # (EEF-CVE-2026-82672, -91043, -92103, -94194; sc-1629), since this
+      # package's mix.lock does not ship with it.
+      {:mint, "~> 1.10 and >= 1.10.2"},
       {:plug, "~> 1.14"},
       {:jason, "~> 1.2"},
       # Dev-only: lets `mix hex.publish` build + publish docs (and `mix docs`).

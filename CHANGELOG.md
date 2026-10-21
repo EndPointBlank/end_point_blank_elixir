@@ -17,6 +17,14 @@
   `x-amz-security-token`, `x-csrf-token`, `x-xsrf-token`, `x-goog-api-key` and
   `ocp-apim-subscription-key`, in any letter case. Every SDK and intake drop
   the same set.
+### Security
+
+- **mint 1.10.2 or later is required (sc-1629).** mint 1.10.0 and 1.10.1
+  carry advisories EEF-CVE-2026-82672, -91043, -92103 and -94194 (HTTP/1
+  response smuggling and HTTP/2 memory exhaustion). The SDK reaches mint only
+  through req and finch, so it now declares `{:mint, "~> 1.10 and >= 1.10.2"}`
+  to make your own lock take a fixed release. Its mix.lock moves to mint
+  1.11.0 and hpax 1.1.0.
 
 ## 0.12.0
 
