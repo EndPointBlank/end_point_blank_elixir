@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+
+- **`RequestStore.get_source_agent_authorization_id/0` names the approved AI
+  agent behind a call (sc-1694).** intake's `/authorize` answers
+  `data[0].source_agent_authorization_id` when the caller presented an agent's
+  access token: the id of the agent's approval in EndPointBlank, the same for
+  every token minted under it. It is nil for a credential, a credential's
+  token, and an intake older than the field. It is cached with the rest of the
+  authorization, and an entry cached by 0.11 or 0.12 still authorizes, with no
+  agent.
+
 ## 0.12.0
 
 ### Added

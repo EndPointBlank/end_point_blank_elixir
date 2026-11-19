@@ -81,6 +81,7 @@ defmodule EndPointBlank.RequestStoreIsolationTest do
     test "clear/0 removes every value, which is what the plug relies on" do
       RequestStore.put_source_env_id("app-env-123")
       RequestStore.put_source_organization_id("org-123")
+      RequestStore.put_source_agent_authorization_id("aa-123")
       RequestStore.put_uuid("uuid-123")
       RequestStore.put_conn(%{stub: true})
 
@@ -88,6 +89,7 @@ defmodule EndPointBlank.RequestStoreIsolationTest do
 
       assert RequestStore.get_source_env_id() == nil
       assert RequestStore.get_source_organization_id() == nil
+      assert RequestStore.get_source_agent_authorization_id() == nil
       assert RequestStore.get_uuid() == nil
       assert RequestStore.get_conn() == nil
     end

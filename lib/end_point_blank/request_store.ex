@@ -12,6 +12,7 @@ defmodule EndPointBlank.RequestStore do
   @uuid_key :epb_uuid
   @source_env_id_key :epb_source_env_id
   @source_organization_id_key :epb_source_organization_id
+  @source_agent_authorization_id_key :epb_source_agent_authorization_id
   @conn_key :epb_conn
 
   def put_uuid(uuid), do: Process.put(@uuid_key, uuid)
@@ -31,11 +32,25 @@ defmodule EndPointBlank.RequestStore do
   def get_source_organization_id, do: Process.get(@source_organization_id_key)
   def put_source_organization_id(id), do: Process.put(@source_organization_id_key, id)
 
+  @doc """
+  The approved AI agent behind the call, by its EndPointBlank agent
+  authorization id, from intake's `/authorize` answer
+  (`data[0].source_agent_authorization_id`, sc-1694). Set only when the caller
+  presented an agent's access token: nil for a credential, a credential's
+  token, or an intake older than the field. The same agent keeps the same id
+  across every token minted under its approval.
+  """
+  def get_source_agent_authorization_id, do: Process.get(@source_agent_authorization_id_key)
+
+  def put_source_agent_authorization_id(id),
+    do: Process.put(@source_agent_authorization_id_key, id)
+
   def clear do
     Process.delete(@uuid_key)
     Process.delete(@conn_key)
     Process.delete(@source_env_id_key)
     Process.delete(@source_organization_id_key)
+    Process.delete(@source_agent_authorization_id_key)
   end
 
   @doc "Generates a random UUID v4 string."

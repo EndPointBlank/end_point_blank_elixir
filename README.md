@@ -10,20 +10,20 @@ repository:
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, "~> 0.12.0"}
+    {:end_point_blank_elixir, "~> 0.13.0"}
   ]
 end
 ```
 
-Pin to the patch level (`~> 0.12.0`, not `~> 0.12`): before 1.0, breaking
-changes ship in minor releases, so `~> 0.12` would accept a future 0.13.0.
+Pin to the patch level (`~> 0.13.0`, not `~> 0.13`): before 1.0, breaking
+changes ship in minor releases, so `~> 0.13` would accept a future 0.14.0.
 
 Or depend on a release tag of the git repo directly:
 
 ```elixir
 def deps do
   [
-    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.12.0"}
+    {:end_point_blank_elixir, git: "https://github.com/EndPointBlank/end_point_blank_elixir.git", tag: "v0.13.0"}
   ]
 end
 ```
