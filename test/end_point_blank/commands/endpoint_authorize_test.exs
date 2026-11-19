@@ -105,6 +105,12 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
           id -> Map.put(access, "source_organization_id", id)
         end
       end)
+      |> then(fn access ->
+        case Keyword.fetch(opts, :source_agent_authorization_id) do
+          {:ok, id} -> Map.put(access, "source_agent_authorization_id", id)
+          :error -> access
+        end
+      end)
 
     %{
       "authorized" => true,
@@ -348,6 +354,60 @@ defmodule EndPointBlank.Commands.EndpointAuthorizeTest do
 
       assert RequestStore.get_source_organization_id() == nil
       assert RequestStore.get_source_env_id() == nil
+    end
+  end
+
+  # sc-1694: intake names the approved AI agent behind an agent's token.
+  describe "the approved agent" do
+    test "is recorded when intake names one", ctx do
+      stub_intake(%{@authorize_path => authorized(source_agent_authorization_id: "aa-7")})
+
+      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      assert RequestStore.get_source_agent_authorization_id() == "aa-7"
+      assert RequestStore.get_source_organization_id() == "org-1"
+    end
+
+    test "is nil when intake answers null or is older than the field", ctx do
+      stub_intake(%{@authorize_path => authorized(source_agent_authorization_id: nil)})
+      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      assert RequestStore.get_source_agent_authorization_id() == nil
+    end
+
+    test "is not recorded when the authorization fails", ctx do
+      RequestStore.put_source_agent_authorization_id("aa-stale")
+      stub_intake(%{@authorize_path => unreachable()})
+
+      capture_log(fn -> EndpointAuthorize.authorize(conn(ctx)) end)
+
+      assert RequestStore.get_source_agent_authorization_id() == nil
+    end
+
+    test "a cache hit still records the agent", ctx do
+      stub_intake(%{@authorize_path => authorized(source_agent_authorization_id: "aa-cached")})
+
+      EndpointAuthorize.authorize(conn(ctx))
+      sync_cache()
+      _primed = authorize_calls()
+      RequestStore.clear()
+
+      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      assert authorize_calls() == []
+      assert RequestStore.get_source_agent_authorization_id() == "aa-cached"
+    end
+
+    test "an entry cached by 0.12 still authorizes, with no agent", ctx do
+      stub_intake(%{@authorize_path => authorized()})
+      RequestStore.put_source_agent_authorization_id("aa-stale")
+
+      key = "epb_auth::#{ctx.path}:GET:test-app:"
+      AuthCache.put(key, {"app-env-0.12", "org-0.12", nil})
+      sync_cache()
+
+      assert {:ok, _} = EndpointAuthorize.authorize(conn(ctx))
+      assert authorize_calls() == []
+      assert RequestStore.get_source_env_id() == "app-env-0.12"
+      assert RequestStore.get_source_organization_id() == "org-0.12"
+      assert RequestStore.get_source_agent_authorization_id() == nil
     end
   end
 

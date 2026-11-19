@@ -26,8 +26,8 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
   network call entirely and return immediately.
 
   Returns `{:ok, conn}` on success (HTTP 201), with the
-  `source_application_environment_id` and `source_organization_id` stored in
-  `RequestStore`.
+  `source_application_environment_id`, `source_organization_id` and
+  `source_agent_authorization_id` stored in `RequestStore`.
   Returns `{:error, reason}` otherwise.
   """
   def authorize(%Plug.Conn{} = conn, path \\ nil, version \\ nil) do
@@ -35,7 +35,7 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
     # a host that reuses workers) must not carry the last caller's identity
     # into this one: a refused or failed authorization leaves both unset
     # rather than naming whoever was authorized before.
-    put_source(nil, nil)
+    put_source(nil, nil, nil)
 
     config = Config.get()
     path = path || conn.request_path
@@ -50,23 +50,29 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
     cache_key = "epb_auth:#{client_auth}:#{path}:#{conn.method}:#{config.app_name}:#{version}"
 
     case AuthCache.get(cache_key) do
+      {:hit, {source_env_id, source_organization_id, agent_authorization_id, deprecation}} ->
+        # The cache carries the deprecation, the calling organization and the
+        # agent as well as the env id. Authorization is cached per
+        # client+route, so caching only the env id would limit the Deprecation
+        # and Sunset headers, the organization and the agent to cache misses —
+        # roughly one request in N, which reads as a flaky feature rather than
+        # a missing one.
+        put_source(source_env_id, source_organization_id, agent_authorization_id)
+        {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
+
       {:hit, {source_env_id, source_organization_id, deprecation}} ->
-        # The cache carries the deprecation and the calling organization as
-        # well as the env id. Authorization is cached per client+route, so
-        # caching only the env id would limit the Deprecation and Sunset
-        # headers, and the organization, to cache misses — roughly one request
-        # in N, which reads as a flaky feature rather than a missing one.
-        put_source(source_env_id, source_organization_id)
+        # An entry cached by 0.11.x or 0.12.x, with no agent authorization id.
+        put_source(source_env_id, source_organization_id, nil)
         {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
 
       {:hit, {source_env_id, deprecation}} ->
         # An entry cached before 0.11.0, with no organization id.
-        put_source(source_env_id, nil)
+        put_source(source_env_id, nil, nil)
         {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
 
       {:hit, source_env_id} ->
         # An entry cached before the deprecation was, holding only the env id.
-        put_source(source_env_id, nil)
+        put_source(source_env_id, nil, nil)
         {:ok, conn}
 
       :miss ->
@@ -118,9 +124,14 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
           end
 
         source_organization_id = source_organization_id(resp_body)
+        agent_authorization_id = agent_authorization_id(resp_body)
 
-        AuthCache.put(cache_key, {source_env_id, source_organization_id, deprecation})
-        put_source(source_env_id, source_organization_id)
+        AuthCache.put(
+          cache_key,
+          {source_env_id, source_organization_id, agent_authorization_id, deprecation}
+        )
+
+        put_source(source_env_id, source_organization_id, agent_authorization_id)
         {:ok, DeprecationHeaders.put_headers(conn, deprecation)}
 
       {:ok, %Req.Response{status: s, body: b}} ->
@@ -157,9 +168,10 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
     nil
   end
 
-  defp put_source(source_env_id, source_organization_id) do
+  defp put_source(source_env_id, source_organization_id, agent_authorization_id) do
     RequestStore.put_source_env_id(source_env_id)
     RequestStore.put_source_organization_id(source_organization_id)
+    RequestStore.put_source_agent_authorization_id(agent_authorization_id)
   end
 
   # sc-1571: the calling organization's EndPointBlank id. An intake older than
@@ -170,6 +182,15 @@ defmodule EndPointBlank.Commands.EndpointAuthorize do
        do: id
 
   defp source_organization_id(_body), do: nil
+
+  # sc-1694: the approved AI agent's EndPointBlank agent authorization id, when
+  # the caller presented an agent's token. Absent from an older intake and null
+  # for every other caller; both are nil here, silently.
+  defp agent_authorization_id(%{"data" => [%{"source_agent_authorization_id" => id} | _]})
+       when is_binary(id),
+       do: id
+
+  defp agent_authorization_id(_body), do: nil
 
   # sc-1625: joining the tuple with dots turned an IPv6 address such as
   # `::ffff:10.40.0.70` into "0.0.0.0.0.65535.2600.70". An IPv4-mapped
